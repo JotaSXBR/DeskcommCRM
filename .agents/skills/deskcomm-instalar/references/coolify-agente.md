@@ -42,7 +42,7 @@ Toda chamada autenticada usa `--token-file`, e JSON de POST usa `--json-file`.
 python3 scripts/coolify.py create-service --base-url http://<VPS_IP>:8000 --token-file coolify.token --name deskcommcrm --compose-file templates/docker-compose.coolify.yml --fqdn https://<DOMAIN>
 ```
 
-Sem `command:` no compose. Sem `ports: 80/443`. O TLS vem do FQDN.
+Sem `command:` no app ou worker (o boot é o CMD da imagem); o `command:` do redis é tuning efêmero herdado do `prod`, não override. Sem `ports: 80/443`. O TLS vem do FQDN.
 
 ## 4. Envs pelo painel ou API do service
 
