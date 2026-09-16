@@ -169,6 +169,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]  # efêmero (rate-limit/debounce)
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
