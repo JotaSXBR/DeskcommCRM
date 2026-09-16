@@ -37,7 +37,7 @@ Pergunte, uma por vez: a instalação já está no ar e o onboarding terminou (n
 WhatsApp conectado, atendente básico, funil)? É para o próprio negócio ou para um cliente? Qual o
 nicho — clínica/consultório, imobiliária, serviços/agência/obra, curso/mentoria/infoproduto, loja?
 
-Sem instalação: guia `deskcomm-instalar`. Sem WhatsApp conectado: nada publica — o agente exige um
+Sem instalação: guia `deskcomm-instalar`. Instalação via Coolify entrega o mesmo contrato (app em https://<DOMAIN> com TLS, sessão do WhatsApp em volume persistente); logs e envs ficam no painel do service, e update é redeploy no painel. Sem WhatsApp conectado: nada publica — o agente exige um
 número com status WORKING. Nicho fora dos cinco: use o pacote genérico e adapte com a triagem.
 
 ## Passo 1 — a triagem
@@ -93,7 +93,7 @@ faz: `references/pela-tela.md`.
 
 Checklist final, medido na tela: agente publicado com o número certo; roteador ativo com todos
 os membros publicados; follow-ups ativos; base com status "pronto"; memória publicada; um teste
-de cada situação do roteiro respondido como esperado; a pessoa sabe onde muda cada coisa. Se algo
+de cada situação do roteiro respondido como esperado; a pessoa sabe onde muda cada coisa; sessão WAHA sobrevive a redeploy (volume waha-data existe no service); update documentado (painel redeploy ou fluxo padrão). Se algo
 ficou de fora (sem chave da OpenAI, sem documentos), escreva no `pacote-<cliente>.md` o que falta e
 o que acontece enquanto falta — não deixe a lacuna invisível.
 
@@ -107,3 +107,4 @@ o que acontece enquanto falta — não deixe a lacuna invisível.
   motor veta resposta com jargão, e o prompt vira a origem do veto.
 - Não instala uma skill do produto ou liga uma capacidade "crítica" (enviar mensagem avulsa,
   cancelar agenda, fechar caso) sem dizer o que ela permite ao agente fazer sozinho.
+- Não subir nem alterar a stack por docker compose up manual no SSH quando o service é gerido pelo Coolify (sai da gestão e a UI mostra Exited).

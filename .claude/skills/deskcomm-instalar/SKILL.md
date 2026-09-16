@@ -37,6 +37,7 @@ Três perguntas, uma por vez, antes de qualquer comando:
 | **Onde estamos rodando?** — dentro da VPS (por SSH), no computador da pessoa, ou no computador de uma agência que vai instalar na VPS de um cliente | O instalador roda **dentro da VPS**. Fora dela, você só prepara (domínio, Supabase, chaves) e monta o comando que ela vai colar no servidor |
 | **Já tem servidor?** | Sem servidor: `bash hostgator-setup-kit/comecar.sh` no computador da pessoa nomeia o plano (2 vCPU / 4 GB, 80 GB, Ubuntu 22.04/24.04, datacenter em São Paulo — o de 1 vCPU / 2 GB **não** dá conta do WhatsApp) e abre o link de parceria |
 | **É para você ou para um cliente?** | Para cliente, leia `references/agencia.md` antes de pedir qualquer chave: o token do Supabase é uma chave mestra da **conta**, e o plano grátis permite **2 projetos por usuário** |
+| **Vai instalar pelo painel Coolify, com o agente operando?** | Se sim, pare aqui e leia `references/coolify-agente.md` — o caminho abaixo (VPS crua + `install.sh` + Caddy) não vale para service gerido pelo Coolify |
 
 ## O caminho principal, na ordem
 
