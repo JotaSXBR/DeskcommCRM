@@ -22,7 +22,7 @@ python3 scripts/remote.py --ssh root@<VPS_IP> --script-file scripts/healthcheck-
 python3 scripts/coolify.py heal-localhost --ssh root@<VPS_IP>
 ```
 
-Siga só com `reachable:true`. O arquivo `scripts/healthcheck-local.sh`
+Siga só com `reachable:true`. O arquivo `.agents/skills/deskcomm-instalar/scripts/healthcheck-local.sh`
 contém exatamente: `docker ps --format '{{.Names}} {{.Status}}'`.
 
 ## 2. Token da API em arquivo 0600
