@@ -62,9 +62,9 @@ def cmd_enable_api(args) -> int:
 
 def cmd_token(args) -> int:
     seed = (
-        "cope = User::where('id', 0)->first();"
+        "$cope = \\App\\Models\\User::orderBy('id')->first();"
         "$team = $cope ? $cope->currentTeam() : \\App\\Models\\Team::first();"
-        "if (!$team) { fwrite(STDERR, 'no-team'); exit(1); }"
+        "if (!$cope || !$team) { fwrite(STDERR, 'no-user-or-team'); exit(1); }"
         "$cope->current_team_id = $team->id; $cope->save();"
         "$t = $cope->createToken('opencode', ['*']); echo $t->accessToken->id . '|' . $t->plainTextToken;"
     )
