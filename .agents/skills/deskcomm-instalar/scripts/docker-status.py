@@ -28,7 +28,10 @@ def main() -> int:
     cmd = ["ssh"]
     if args.ssh_opts:
         cmd += shlex.split(args.ssh_opts)
-    cmd += [args.ssh] + inner
+    # Um único argumento remoto: o ssh junta argv com espaços e o shell remoto
+    # repartiria o valor de --format nas TABs. Com shlex.join as aspas viajam
+    # junto e o formato chega intacto.
+    cmd += [args.ssh, shlex.join(inner)]
 
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:

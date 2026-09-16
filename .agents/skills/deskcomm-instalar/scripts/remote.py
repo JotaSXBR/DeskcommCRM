@@ -29,11 +29,13 @@ def main() -> int:
     cmd = ["ssh"]
     if args.ssh_opts:
         cmd += shlex.split(args.ssh_opts)
-    cmd += [args.ssh]
     if args.in_container:
-        cmd += ["docker", "exec", "-i", args.in_container] + shlex.split(args.exec)
+        remote = ["docker", "exec", "-i", args.in_container] + shlex.split(args.exec)
     else:
-        cmd += ["bash", "-s"]
+        remote = ["bash", "-s"]
+    # Um único argumento remoto (ver docker-status.py): o ssh junta argv com
+    # espaços e o shell remoto repartiria valores com espaços/TABs/aspas.
+    cmd += [args.ssh, shlex.join(remote)]
 
     if args.dry_run:
         print(" ".join(shlex.quote(c) for c in cmd) + " < " + args.script_file)
