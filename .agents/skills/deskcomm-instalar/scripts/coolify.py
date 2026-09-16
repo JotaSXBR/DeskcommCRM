@@ -25,12 +25,12 @@ import urllib.request
 PSQL_COOLIFY_DB = ["docker", "exec", "-i", "coolify-db", "psql", "-U", "coolify", "-d", "coolify", "-tA"]
 
 
-def ssh_run(ssh: str, remote: list[str], ssh_opts: str = "") -> subprocess.CompletedProcess:
+def ssh_run(ssh: str, remote: list[str], ssh_opts: str = "", input: bytes | None = None) -> subprocess.CompletedProcess:
     import shlex
     cmd = ["ssh"]
     if ssh_opts:
         cmd += shlex.split(ssh_opts)
-    return subprocess.run(cmd + [ssh] + remote, capture_output=True)
+    return subprocess.run(cmd + [ssh] + remote, capture_output=True, input=input)
 
 
 def read_token(path: str) -> str:
@@ -74,14 +74,18 @@ def cmd_token(args) -> int:
         + seed + "\nPHPEOF\n"
         "docker exec -i coolify php /tmp/coolify-token.php"
     )
-    p = ssh_run(args.ssh, ["bash", "-s"], args.ssh_opts)
-    sys.stderr.write("token deve ser gerado dentro do container coolify; saída abaixo (só metadados)\n")
-    sys.stdout.write(p.stdout.decode("utf-8", "replace"))
+    p = ssh_run(args.ssh, ["bash", "-s"], args.ssh_opts, input=helper.encode("utf-8"))
     if p.returncode != 0:
         sys.stderr.write(p.stderr.decode("utf-8", "replace"))
         return p.returncode
-    _ = helper
-    sys.stderr.write("grave o token id|segredo em " + args.out + " com modo 0600\n")
+    out = p.stdout.decode("utf-8", "replace")
+    tok = next((part.strip() for part in out.split() if "|" in part), "")
+    if not tok:
+        sys.stderr.write("token não encontrado na saída remota\n")
+        return 1
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write(tok + "\n")
+    os.chmod(args.out, 0o600)
     return 0
 
 
@@ -137,16 +141,13 @@ def cmd_heal_localhost(args) -> int:
         "docker exec coolify ssh -o BatchMode=yes -o ConnectTimeout=5 root@host.docker.internal true "
         "&& echo '{\"reachable\":true}' || echo '{\"reachable\":false}'\n"
     )
-    p = ssh_run(args.ssh, ["bash", "-s"], args.ssh_opts)
+    p = ssh_run(args.ssh, ["bash", "-s"], args.ssh_opts, input=script.encode("utf-8"))
     out = p.stdout.decode("utf-8", "replace")
     sys.stdout.write(out if out else "")
     if p.returncode != 0:
         sys.stderr.write(p.stderr.decode("utf-8", "replace"))
         return p.returncode
     if '"reachable":true' not in out:
-        with open("/tmp/heal-localhost.sh", "w", encoding="utf-8", newline="\n") as f:
-            f.write(script)
-        sys.stderr.write("rode scripts/remote.py --script-file com o conteúdo impresso em dry-run local e re-tente\n")
         return 1
     return 0
 
