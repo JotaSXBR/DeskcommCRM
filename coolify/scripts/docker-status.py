@@ -18,7 +18,23 @@ def main():
     flag = "-a" if a.all else ""
     r = run_lines(a.ssh, "docker ps %s --format '{{.Names}}|{{.Image}}|{{.Status}}'" % flag)
     rows = [l for l in (r["stdout"] or "").splitlines() if l.strip()]
-    print(json.dumps({"ok": r["ok"], "containers": rows}))
+    out = {"ok": r["ok"], "containers": rows}
+    m = run_lines(a.ssh, "free -m | awk '/^Mem:/{print $7}'")
+    d = run_lines(a.ssh, "df -m / | awk 'NR==2{print $4}'")
+    try:
+        out["ram_mb_free"] = int((m["stdout"] or "").strip().split("\n")[-1])
+    except (ValueError, IndexError):
+        out["ram_mb_free"] = -1
+    try:
+        out["disk_mb_free"] = int((d["stdout"] or "").strip().split("\n")[-1])
+    except (ValueError, IndexError):
+        out["disk_mb_free"] = -1
+    out["warnings"] = []
+    if out["ram_mb_free"] != -1 and out["ram_mb_free"] < 3300:
+        out["warnings"].append("ram_baixa")
+    if out["disk_mb_free"] != -1 and out["disk_mb_free"] < 20480:
+        out["warnings"].append("disco_baixo")
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":
