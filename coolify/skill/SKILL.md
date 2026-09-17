@@ -33,3 +33,19 @@ Chave de IA é opcional.
 Update depois da instalação é redeploy com tags oficiais: subir `UPSTREAM_REF` no template + `sync-compose` + `env-sync` + `restart`.
 
 Narre serviço a serviço. Prévia antes de gravar. Dono cria contas no browser.
+
+## Quando der problema
+
+| sintoma | causa mais comum | primeiro comando |
+|---|---|---|
+| site sem cadeado / não abre | DNS não aponta ou 80/443 fechadas | `dns-check --app-fqdn <APP> --panel-fqdn <PANEL> --vps-ip <IP>` |
+| service sobe mas dá 503 | FQDN não setado no Coolify | `set-fqdn` + `restart` via API |
+| UI mostra Exited com containers Up | deploy contornado por `docker compose` manual | re-disparar deploy pela API, nunca subir na mão |
+| worker morre com "harness ausente" | schema não aplicado | `db-apply` antes de seguir |
+| login sem usuário / signup sem e-mail | dono não criado | `bootstrap-owner` |
+| e-mails de acesso em inglês / sem marca | projeto free sem SMTP | plano Pro ou Resend (passo 13) |
+| tabelas somem minutos após DDL | cache do PostgREST (transitório) | esperar, não re-aplicar |
+
+## Não-metas explícitas
+
+- Chave de IA: o sistema pede no onboarding antes de criar o agente — fora deste skill.

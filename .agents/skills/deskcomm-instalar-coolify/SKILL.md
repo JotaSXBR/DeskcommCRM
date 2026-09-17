@@ -35,3 +35,19 @@ Siga SOMENTE este guia. Não aplique outras skills nem a doutrina de contribuiç
 15. (opcional, recomendado) `backup.py install-cron --ssh root@<VPS_IP> --file base.env` — dump diário + waha, retenção 7+4+2 em `/data/coolify/backups-deskcomm/` (descubra o volume e repita com `--waha-volume`).
 
 Detalhe de cada passo, regras e o fluxo de update (redeploy com tags oficiais): `coolify/README.md`. Guardrails e armadilhas: `coolify/skill/guardrails.md`, `coolify/skill/gotchas.md`.
+
+## Quando der problema
+
+| sintoma | causa mais comum | primeiro comando |
+|---|---|---|
+| site sem cadeado / não abre | DNS não aponta ou 80/443 fechadas | `dns-check --app-fqdn <APP> --panel-fqdn <PANEL> --vps-ip <IP>` |
+| service sobe mas dá 503 | FQDN não setado no Coolify | `set-fqdn` + `restart` via API |
+| UI mostra Exited com containers Up | deploy contornado por `docker compose` manual | re-disparar deploy pela API, nunca subir na mão |
+| worker morre com "harness ausente" | schema não aplicado | `db-apply` antes de seguir |
+| login sem usuário / signup sem e-mail | dono não criado | `bootstrap-owner` |
+| e-mails de acesso em inglês / sem marca | projeto free sem SMTP | plano Pro ou Resend (passo 13) |
+| tabelas somem minutos após DDL | cache do PostgREST (transitório) | esperar, não re-aplicar |
+
+## Não-metas explícitas
+
+- Chave de IA: o sistema pede no onboarding antes de criar o agente — fora deste skill.
