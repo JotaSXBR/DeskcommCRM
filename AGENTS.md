@@ -123,7 +123,7 @@ pnpm install          # deps (frozen-lockfile no CI)
 pnpm dev              # dev server
 pnpm build            # next build
 pnpm lint             # eslint
-pnpm typecheck        # tsc --noEmit (estrito)
+pnpm typecheck        # tsc --noEmit -p tsconfig.typecheck.json (inclui tests/)
 pnpm test:unit        # vitest — EXCLUI tests/invariants, tests/e2e e tests/journeys (lista viva em vitest.config.ts → exclude)
 pnpm test:db          # invariantes de banco + gate do baseline (PRECISA de Docker)
 pnpm test:e2e         # Playwright (PRECISA de app rodando + banco semeado)
@@ -147,9 +147,10 @@ usuário, rode `pnpm test:e2e` com evidência visual. Se toca `Dockerfile*`, `do
 **O que o CI cobre.** `.github/workflows/ci.yml`: `verify` = os passos do job, na ordem —
 typecheck, lint, `lint:channels`, `test:unit` e `test:shell` hoje, e `pnpm lint` sozinho **não**
 cobre os dois últimos (liste em vez de acreditar nesta linha:
-`awk '/^  verify:/,/^  invariants:/' .github/workflows/ci.yml | grep -A1 'name:'`);
-`invariants` = `pnpm test:db` (isolamento RLS + invariantes de governança contra Postgres
-efêmero pg15). `.github/workflows/perf.yml`: `build-and-size` = `pnpm build`.
+`awk '/^  verify:/,/^  invariants-majors:/' .github/workflows/ci.yml | grep -A1 'name:'`);
+`invariants` = fachada sobre a matriz `invariants-majors`, que roda `pnpm test:db` (isolamento
+RLS + invariantes de governança) e `pnpm test:db:update` (atualizar banco COM dados) uma vez por
+major de Postgres suportado. `.github/workflows/perf.yml`: `build-and-size` = `pnpm build`.
 `.github/workflows/e2e.yml` roda as specs Playwright contra um Supabase local de verdade com
 o `baseline.sql` aplicado — o mesmo banco que o self-hoster tem. **É check obrigatório** — a
 data de ativação não é auditável pelo repositório, e a lista viva está logo abaixo, com o
@@ -447,7 +448,8 @@ regra de packaging acima se mudou o artefato que o self-hoster instala.
 O repositório embute guias em `.agents/skills/` — lidos por Codex, Cursor, OpenCode e
 Antigravity; o Claude Code lê o espelho em `.claude/skills/` (`pnpm skills:sync` regrava, e
 `tests/unit/skills-embutidas.test.ts` reprova divergência). Carregue o guia quando o pedido
-casar, mesmo que a pessoa não saiba que ele existe:
+casar, mesmo que a pessoa não saiba que ele existe. Fora de um clone (ou num clone antigo),
+`bash scripts/instalar-guias.sh` liga os guias nas pastas globais dos cinco CLIs:
 
 | situação | guia |
 |---|---|
@@ -457,6 +459,12 @@ casar, mesmo que a pessoa não saiba que ele existe:
 | o agente responde errado, passa tudo para humano, não usa a agenda; melhorar o prompt | `deskcomm-prompt` |
 | contribuir: corrigir bug, abrir ou atualizar PR, migration, conflito com a `main` | `deskcomm-contribuir` — que fica quieto quando `bash .agents/skills/deskcomm-contribuir/scripts/quem-sou.sh` responde `mantenedor` |
 | escrever ou revisar código aqui | `deskcomm-doutrina` (as três regras que mais custam) e `sistema-vivo` (o gate de arquitetura) |
+
+Os guias têm vitrine pública em [deskcomm.com.br/guias](https://www.deskcomm.com.br/guias) (pt-BR,
+en, es), escrita à mão no repositório `deskcomm-site` (`conteudo/guias.ts`). Guia criado,
+renomeado ou com comando novo → o PR avisa que aquela página precisa acompanhar. Ela sai do mesmo
+PR do `deskcomm-site` que a página de changelog; quem quiser saber se já está no ar usa o `curl` da
+seção "A vitrine" em [`docs/doctrine/versionamento.md`](docs/doctrine/versionamento.md).
 
 ## Regra final — não invente
 
@@ -472,6 +480,11 @@ nunca o número. O número é calculado a partir do conjunto; confira com `pnpm 
 corte com `pnpm release:cortar`. Régua e porquê: [`docs/doctrine/versionamento.md`](docs/doctrine/versionamento.md).
 Quem instalou lê o [`CHANGELOG.md`](CHANGELOG.md) antes de rodar `update.sh` — mudança que exige
 ação manual aparece sob "⚠️ Requer atenção".
+Toda versão publicada aparece também em [deskcomm.com.br/changelog](https://www.deskcomm.com.br/changelog)
+(pt-BR, en, es): a LP lê o `CHANGELOG.md` da `main`, ninguém escreve release no site, e o último
+passo do corte reprova se a versão não chegou lá. Mudar o cabeçalho `## [X.Y.Z] — AAAA-MM-DD` quebra
+essa página — ver "A vitrine" em `docs/doctrine/versionamento.md`. Enquanto as três páginas não
+responderem 200, esse passo reprova TODO corte; o `curl` que mede isso abre aquela seção.
 
 **Regra final — não invente.** Este repositório tem PRDs, specs, regras de negócio e doutrina
 escritos. Nunca invente regra de negócio, número, SLA ou comportamento de produto. Se a regra não
