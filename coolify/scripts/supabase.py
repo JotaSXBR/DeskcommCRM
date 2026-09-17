@@ -171,6 +171,7 @@ def cmd_provision(a):
         "WAHA_API_KEY_SHA512": hashlib.sha512(waha_key.encode()).hexdigest(),
         "WAHA_HMAC_SECRET": hx(),
         "SRH_TOKEN": hx(),
+        "SENTRY_DSN": a.sentry,
     }
     fd = os.open(a.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -317,6 +318,7 @@ def main():
     v.add_argument("--app-fqdn", required=True)
     v.add_argument("--ssh", required=True)
     v.add_argument("--out", required=True)
+    v.add_argument("--sentry", required=True)
     e = sub.add_parser("marca-emails")
     e.add_argument("--token-file", required=True)
     e.add_argument("--file", required=True)
