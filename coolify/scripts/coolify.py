@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shlex
+import socket
 import sys
 import tempfile
 import time
@@ -239,6 +240,27 @@ def cmd_instance_domain(a):
         "\"SELECT fqdn FROM instance_settings LIMIT 1;\" </dev/null\n")
     print(json.dumps({"ok": r["ok"],
                       "fqdn": (r["stdout"] or "").strip()}))
+
+
+def mask(v):
+    s = str(v)
+    return s[:4] + "..." + s[-2:] if len(s) > 8 else "..."
+
+
+def cmd_dns_check(a):
+    checks = []
+    ok_all = True
+    for fqdn in (a.app_fqdn, a.panel_fqdn):
+        try:
+            ips = sorted({r[4][0] for r in socket.getaddrinfo(fqdn, 443, 0, 0, 0, 0)})
+        except Exception:
+            ips = []
+        match = a.vps_ip in ips
+        checks.append({"fqdn": fqdn, "resolve": ips, "match": match})
+        ok_all = ok_all and match
+    print(json.dumps({"ok": ok_all, "vps_ip": a.vps_ip, "checks": checks}))
+    if not ok_all and not a.allow_unresolved:
+        sys.exit(1)
 
 
 def parse_env_file(path):
@@ -486,6 +508,9 @@ def main():
     sc.add_argument("--token-file", required=True); sc.add_argument("--service-uuid", required=True)
     sc.add_argument("--compose-file", required=True)
     idd = sub.add_parser("instance-domain"); idd.add_argument("--ssh", required=True)
+    dc = sub.add_parser("dns-check"); dc.add_argument("--app-fqdn", required=True)
+    dc.add_argument("--panel-fqdn", required=True); dc.add_argument("--vps-ip", required=True)
+    dc.add_argument("--allow-unresolved", action="store_true")
     g = sub.add_parser("api-get"); g.add_argument("--base-url", required=True)
     g.add_argument("--token-file", required=True); g.add_argument("--path", required=True)
     es = sub.add_parser("env-sync"); es.add_argument("--base-url", required=True)
@@ -523,6 +548,8 @@ def main():
         cmd_sync_compose(a)
     elif a.cmd == "instance-domain":
         cmd_instance_domain(a)
+    elif a.cmd == "dns-check":
+        cmd_dns_check(a)
     elif a.cmd == "api-get":
         s, b = api_req(a.base_url, a.token_file, "GET", a.path)
         print(json.dumps({"status": s, "body": b[:2000]}))
