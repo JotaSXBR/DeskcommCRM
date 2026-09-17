@@ -181,3 +181,9 @@ __pycache__/
 
 # Runtime do instalador single-server: Supabase self-hosted, credenciais e dados.
 .runtime/
+
+# Instalador Coolify (branch coolify/overlay): artefatos transitórios com
+# segredos vivos — token do painel, token do Supabase, env gerado. NUNCA
+# commitar; vivem só no disco de quem opera a VPS.
+*.token
+base.env

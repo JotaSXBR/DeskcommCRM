@@ -18,14 +18,19 @@ Clonado local e executado daqui. Sem marketplace, sem build na VPS, sem tocar no
 3. `wait-admin` — se já há admin, pula sozinho; senão, único manual no browser do painel
 4. `enable-api` + `token --out coolify.token --base-url https://<COOLIFY_FQDN>` via SSH (reusa o token se válido; semeia o team antes de gerar; arquivo `0600` transitório, nunca no log)
 5. `instance-domain` — lê e mostra o FQDN do painel; se ausente, setar ANTES dos serviços + `docker restart coolify` (com OK explícito; no seu caso já existe, só confere)
-6. `create-project` — reusa `DeskcommCRM` se existir; `ensure-service --project-uuid <uuid> --compose-file deskcomm.coolify.yml` — reusa `deskcommcrm` se existir (descoberta por nome, funciona em máquina nova sem estado)
-7. `env-sync --file base.env --app-fqdn <APP_FQDN>` — PATCH por chave (cria a ausente), deriva `DOMAIN`, `WAHA_WEBHOOK_BASE_URL`, `NEXT_PUBLIC_APP_URL` e `NEXT_PUBLIC_ADMIN_URL` (ambas `https://<APP_FQDN>`)
-8. `set-fqdn --app-id <id> --fqdn <APP_FQDN>` + `restart` via API (com OK explícito em produção) + `poll-tls https://<APP_FQDN>` até 200 com cert válido
-9. Dono no browser → onboarding → WhatsApp QR (app do celular em Aparelhos conectados) → `healthcheck.sh`
+6. `supabase.py provision --token-file supabase.token --org-id <org> --app-fqdn <APP_FQDN> --ssh root@<VPS_IP> --out base.env` — cria o projeto, **aguarda `ACTIVE_HEALTHY`**, descobre o pooler por conexão real, configura a Site URL e grava `base.env` (`0600`, fora do repo); nome duplicado na org recusa sem criar nada
+7. `db-apply --file base.env --sql supabase/baseline.sql` — extensões (vector, citext, pg_trgm) + baseline + verificação (≥30 tabelas, harness completo); roda **antes de seguir**: banco novo aplica com ON_ERROR_STOP, existente re-aplica filtrando erros benignos
+8. `create-project` — reusa `DeskcommCRM` se existir, senão cria com nome + descrição (`--description` sobrescreve); `ensure-service --project-uuid <uuid> --compose-file deskcomm.coolify.yml` — reusa `deskcommcrm` se existir (descoberta por nome, funciona em máquina nova sem estado)
+9. `env-sync --file base.env --app-fqdn <APP_FQDN>` — PATCH por chave (cria a ausente), deriva `DOMAIN`, `WAHA_WEBHOOK_BASE_URL`, `NEXT_PUBLIC_APP_URL` e `NEXT_PUBLIC_ADMIN_URL` (ambas `https://<APP_FQDN>`) e o Redis interno (`UPSTASH_REDIS_REST_URL=http://srh:80`, `UPSTASH_REDIS_REST_TOKEN=<SRH_TOKEN>`); Upstash Cloud só como override manual
+10. `set-fqdn --app-id <id> --fqdn <APP_FQDN>` + `restart` via API (com OK explícito em produção) + `poll-tls https://<APP_FQDN>` até 200 com cert válido
+11. `supabase.py marca-emails --token-file supabase.token --file base.env --app-fqdn <APP_FQDN>` — Site URL + redirects dos e-mails de acesso (conferido por releitura); a MARCA do modelo é recusada em projeto free sem SMTP próprio (`free_tier_sem_smtp` — medida que derrubou a do kit de 2026-08-14; libera com plano Pro ou SMTP da Resend)
+12. `bootstrap-owner --file base.env --email <dono> --password <senha> --ssh root@<VPS_IP>` — cria o dono já confirmado + org + admin (não depende de e-mail; troque a senha no primeiro login)
+13. (opcional, Enter pula) Resend: `env-set RESEND_API_KEY=<chave> RESEND_FROM_EMAIL=<remetente> --service-uuid <uuid> ...` + `restart` + `poll-tls` — liga convites e e-mails de LGPD; a mesma chave serve de SMTP do Supabase e destrava a marca do passo 11
+14. Dono no browser → login → onboarding → WhatsApp QR (app do celular em Aparelhos conectados) → `healthcheck.sh`
 
 ## Atualização (update = redeploy com tags oficiais)
 
-As imagens vêm do repositório oficial (`ghcr.io/melgarafael/...`), nunca do fork. Atualizar é subir os números de `UPSTREAM_REF` no `deskcomm.coolify.yml` e rodar: `sync-compose --service-uuid <uuid> --compose-file deskcomm.coolify.yml` + `env-sync` + `restart` (com OK explícito). Sem build, sem clone do produto. Se o `sync-compose` responder 404/405 nessa versão do Coolify, o fallback é colar o template em Configuration › Edit Compose File › Save › Deploy.
+As imagens vêm do repositório oficial (`ghcr.io/melgarafael/...`), nunca do fork. Atualizar é subir os números de `UPSTREAM_REF` no `deskcomm.coolify.yml` e rodar: `sync-compose --service-uuid <uuid> --compose-file deskcomm.coolify.yml` + `env-sync` + `restart` (com OK explícito). Sem build, sem clone do produto. O `sync-compose` usa PATCH (provado na 4.3.19; PUT dá 405); se mesmo assim responder 404/405, o fallback é colar o template em Configuration › Edit Compose File › Save › Deploy.
 
 ## Regras
 
