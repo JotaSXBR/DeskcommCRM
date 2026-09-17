@@ -13,6 +13,7 @@ Clonado local e executado daqui. Sem marketplace, sem build na VPS, sem tocar no
 
 ## Instalação (primeira vez)
 
+0. `dns-check --app-fqdn <APP_FQDN> --panel-fqdn <COOLIFY_FQDN> --vps-ip <IP>` — A-record dos 2 FQDNs contra o IP antes de criar qualquer coisa; IP divergente sugere nuvem laranja ou DNS errado; AAAA divergente não bloqueia; `--allow-unresolved` segue sem cadeado e o TLS sai quando o DNS valer
 1. `scripts/docker-status.py` — inventário brownfield read-only, nunca destrói
 2. `scripts/coolify.py heal-localhost` — normaliza `authorized_keys`, confirma container→host
 3. `wait-admin` — se já há admin, pula sozinho; senão, único manual no browser do painel
