@@ -296,6 +296,10 @@ def cmd_env_sync(a):
         env["UPSTASH_REDIS_REST_URL"] = "http://srh:80"
     if not env.get("UPSTASH_REDIS_REST_TOKEN"):
         env["UPSTASH_REDIS_REST_TOKEN"] = env["SRH_TOKEN"]
+    if a.preview:
+        rows = [{"key": k, "value": mask(v)} for k, v in env.items()]
+        print(json.dumps({"preview": True, "total": len(rows), "env": rows}))
+        return
     data = [{"key": k, "value": v} for k, v in env.items()]
     if not data:
         print(json.dumps({"synced": 0, "total": 0, "results": []}))
@@ -516,6 +520,7 @@ def main():
     es = sub.add_parser("env-sync"); es.add_argument("--base-url", required=True)
     es.add_argument("--token-file", required=True); es.add_argument("--service-uuid", required=True)
     es.add_argument("--file", required=True); es.add_argument("--app-fqdn", default="")
+    es.add_argument("--preview", action="store_true")
     en = sub.add_parser("env-set"); en.add_argument("--base-url", required=True)
     en.add_argument("--token-file", required=True); en.add_argument("--service-uuid", required=True)
     en.add_argument("--set", nargs="+", required=True,
