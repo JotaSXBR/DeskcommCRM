@@ -28,6 +28,7 @@ Chave de IA é opcional.
 12. `bootstrap-owner --file base.env --email <dono> --password <senha>` (dono confirmado + org + admin, sem e-mail)
 13. (opcional) `env-set RESEND_API_KEY=<chave> RESEND_FROM_EMAIL=<remetente>` + `restart` + `poll-tls` (convites/LGPD; a chave destrava a marca do passo 11)
 14. Dono no browser do app → login → onboarding → QR do WhatsApp → `healthcheck.sh`
+15. (opcional, recomendado) `backup.py install-cron --ssh root@IP --file base.env` — dump diário + waha, retenção 7+4+2 em `/data/coolify/backups-deskcomm/`
 
 Update depois da instalação é redeploy com tags oficiais: subir `UPSTREAM_REF` no template + `sync-compose` + `env-sync` + `restart`.
 

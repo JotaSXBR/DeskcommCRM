@@ -32,5 +32,6 @@ Siga SOMENTE este guia. Não aplique outras skills nem a doutrina de contribuiç
 12. `coolify.py bootstrap-owner --file base.env --email <dono> --password <senha> --ssh root@<VPS_IP>` — dono confirmado + org + admin, sem depender de e-mail.
 13. **Pergunte obrigatoriamente** se o operador quer configurar o Resend; explique que sem ele o app funciona, mas convites e e-mails de LGPD não saem. Se fornecer a chave, confirme o remetente/domínio e só então execute `coolify.py env-set RESEND_API_KEY=<chave> RESEND_FROM_EMAIL=<remetente> --service-uuid <uuid> --base-url https://<COOLIFY_FQDN> --token-file coolify.token` + `restart` + `poll-tls` — a chave também destrava a marca do passo 11. Se recusar, registre que foi pulado.
 14. Dono no browser do app → login → onboarding → QR do WhatsApp → `healthcheck.sh` do kit original.
+15. (opcional, recomendado) `backup.py install-cron --ssh root@<VPS_IP> --file base.env` — dump diário + waha, retenção 7+4+2 em `/data/coolify/backups-deskcomm/` (descubra o volume e repita com `--waha-volume`).
 
 Detalhe de cada passo, regras e o fluxo de update (redeploy com tags oficiais): `coolify/README.md`. Guardrails e armadilhas: `coolify/skill/guardrails.md`, `coolify/skill/gotchas.md`.
