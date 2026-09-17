@@ -103,6 +103,29 @@ fi
     print(r["stdout"].strip() or json.dumps(r))
 
 
+def cmd_install_coolify(a):
+    r = run_script_file(a.ssh, "set -euo pipefail\n"
+        "curl -fsSL https://cdn.coollabs.io/coolify/install.sh -o /tmp/coolify-install.sh\n"
+        "setsid bash /tmp/coolify-install.sh < /dev/null > /tmp/coolify-install.log 2>&1 &\n"
+        "echo '{\"started\":true}'\n")
+    if not r["ok"]:
+        print(json.dumps({"installed": False, "reason": "download_ou_disparo_falhou",
+                          "stderr": (r["stderr"] or "")[:200]}))
+        sys.exit(1)
+    last = ""
+    for _ in range(a.attempts):
+        h = run_lines(a.ssh, "curl -s -o /dev/null -w '%{http_code}' "
+                             "http://localhost:8000/api/health || true")
+        last = (h["stdout"] or "").strip()
+        if last == "200":
+            print(json.dumps({"installed": True}))
+            return
+        time.sleep(10)
+    print(json.dumps({"installed": False, "reason": "timeout_health",
+                      "last": last}))
+    sys.exit(1)
+
+
 def cmd_wait_admin(a):
     for _ in range(1, a.attempts + 1):
         r = run_lines(a.ssh, "docker exec -i coolify-db psql -U coolify -d coolify -tAc \"SELECT count(*) FROM users;\"")
@@ -495,6 +518,8 @@ def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     h = sub.add_parser("heal-localhost"); h.add_argument("--ssh", required=True)
+    ic = sub.add_parser("install-coolify"); ic.add_argument("--ssh", required=True)
+    ic.add_argument("--attempts", type=int, default=60)
     w = sub.add_parser("wait-admin"); w.add_argument("--ssh", required=True)
     w.add_argument("--attempts", type=int, default=120)
     e = sub.add_parser("enable-api"); e.add_argument("--ssh", required=True)
@@ -539,6 +564,8 @@ def main():
     a = p.parse_args()
     if a.cmd == "heal-localhost":
         cmd_heal_localhost(a)
+    elif a.cmd == "install-coolify":
+        cmd_install_coolify(a)
     elif a.cmd == "wait-admin":
         cmd_wait_admin(a)
     elif a.cmd == "enable-api":
