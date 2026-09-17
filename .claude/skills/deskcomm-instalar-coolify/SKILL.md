@@ -18,6 +18,7 @@ Siga SOMENTE este guia. Não aplique outras skills nem a doutrina de contribuiç
 
 0. `dns-check --app-fqdn <APP_FQDN> --panel-fqdn <COOLIFY_FQDN> --vps-ip <IP>` — A-record dos 2 FQDNs antes de criar qualquer coisa (`--allow-unresolved` segue sem cadeado)
 1. `py -3 coolify/scripts/docker-status.py --ssh root@<VPS_IP>` (no WSL: `python3`) — inventário read-only, reusar Coolify saudável, nunca destruir.
+0b. (só se o passo 1 não achar Coolify) `install-coolify --ssh root@<VPS_IP>` — instalador oficial latest em arquivo + run detached + poll do /api/health até 200; depois segue no wait-admin. Nunca canalize curl direto para shell.
 2. `coolify.py heal-localhost --ssh root@<VPS_IP>` — exige `reachable:true` antes de tudo.
 3. `coolify.py wait-admin --ssh root@<VPS_IP>` — se já há admin, pula sozinho; senão o usuário cria no browser do painel.
 4. `coolify.py enable-api --ssh root@<VPS_IP>` + `coolify.py token --ssh root@<VPS_IP> --out coolify.token --base-url https://<COOLIFY_FQDN>` — reusa o token se válido; arquivo `0600` transitório, nunca no log.

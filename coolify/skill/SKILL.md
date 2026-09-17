@@ -14,6 +14,7 @@ Chave de IA é opcional.
 
 0. `dns-check --app-fqdn <APP_FQDN> --panel-fqdn <COOLIFY_FQDN> --vps-ip <IP>` — DNS dos 2 FQDNs antes de tudo (`--allow-unresolved` segue sem cadeado)
 1. `docker-status.py --ssh root@IP` — inventário brownfield, reusar Coolify saudável
+0b. (só sem Coolify) `install-coolify --ssh root@IP` — oficial latest detached + poll health, depois wait-admin
 2. `coolify.py heal-localhost --ssh root@IP` — `reachable:true` antes de tudo
 3. `wait-admin` — se já há admin, pula sozinho; senão o usuário cria no browser
 4. `enable-api` + `token --out coolify.token --base-url https://<COOLIFY_FQDN>` (reusa se válido)
