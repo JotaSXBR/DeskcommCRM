@@ -34,6 +34,10 @@ Clonado local e executado daqui. Sem marketplace, sem build na VPS, sem tocar no
 
 As imagens vêm do repositório oficial (`ghcr.io/melgarafael/...`), nunca do fork. Atualizar é subir os números de `UPSTREAM_REF` no `deskcomm.coolify.yml` e rodar: `sync-compose --service-uuid <uuid> --compose-file deskcomm.coolify.yml` + `env-sync` + `restart` (com OK explícito). Sem build, sem clone do produto. O `sync-compose` usa PATCH (provado na 4.3.19; PUT dá 405); se mesmo assim responder 404/405, o fallback é colar o template em Configuration › Edit Compose File › Save › Deploy.
 
+## Backup (pós-install, opcional mas recomendado)
+
+`backup.py run` no host gera `db-<data>.sql.gz` (pg_dump via `SUPABASE_DB_URL`) + `waha-<data>.tgz` (snapshot do volume) em `/data/coolify/backups-deskcomm/` — mesma VPS, cópia externa manual. Retenção por camadas: 7 mais novos + 1 por semana (4) + 1 por mês (2). `install-cron --ssh root@IP --file base.env [--waha-volume <vol>]` despacha script + env `0600` e agenda `0 3 * * *`; descubra o volume com `docker volume ls | grep -i waha` e repita com a flag (sem ela, o snapshot é pulado com aviso, nunca falha o dump). Restore: `psql '<db-url>' < db-<ts>.sql.gz` + `docker run --rm -v <vol>:/data -v <dir>:/in alpine tar xzf /in/waha-<ts>.tgz -C /data`.
+
 ## Regras
 
 - `UPSTREAM_REF=1.28.0` numerada, nunca `latest`/`main`. Update = trocar a ref e regenerar.
