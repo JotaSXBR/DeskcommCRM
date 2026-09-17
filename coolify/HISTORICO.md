@@ -176,3 +176,21 @@ teve OK antes de entrar), todos medidos contra a VPS real.
   baseline aplicado: `109` tabelas públicas e harness `4/4`. Uma repetição do
   `db-apply` entrou no caminho de atualização e ficou aguardando; foi
   interrompida sem alteração adicional, pois o schema já estava validado.
+
+## Gate de hardening (2026-09-17, plano em 9 tarefas)
+
+- `py_compile` OK nos 5 scripts; `compose config` OK (só warnings de env vazia);
+  `--help` OK em `dns-check`, `install-coolify`, `env-sync`, `provision`,
+  `install-cron`; espelhos byte-idênticos; retenção provada sem SSH (12+16=28);
+  `dns-check` mismatch→exit 1, `--allow-unresolved`→exit 0; `--preview` exit 0
+  sem ler token nem rede; `--sentry` exigido (exit 2 sem ele).
+- Novos comandos: `dns-check` (passo 0), `install-coolify` (passo 0b, VPS vazia),
+  `env-sync --preview` (máscara 4...2), `backup.py run|install-cron` (retenção
+  7+4+2 em `/data/coolify/backups-deskcomm/`, passo 15 opcional),
+  `provision --sentry` + `--force` (limite free), RAM/disco no `docker-status`,
+  tabela de sintomas + não-meta da chave de IA.
+- Desvios declarados do plano: `preview` após derivação completa (reflete o que
+  será gravado); backup unificado em `backup.py` (`run` + `install-cron`), sem
+  wrapper no `coolify.py`.
+- SSH real (install-coolify, recursos, cron, guard em VPS) valida na próxima run;
+  segredos seguem fora do repo (`*.token`, `base.env` ignorados).
