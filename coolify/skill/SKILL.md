@@ -19,7 +19,7 @@ Chave de IA é opcional.
 3. `wait-admin` — se já há admin, pula sozinho; senão o usuário cria no browser
 4. `enable-api` + `token --out coolify.token --base-url https://<COOLIFY_FQDN>` (reusa se válido)
 5. `instance-domain` — confere o FQDN do painel, nunca sobrescreve sem OK
-6. `supabase.py provision` (cria o projeto, aguarda ACTIVE, grava `base.env`) — perguntar telemetria antes (off ou DSN) e passar `--sentry`
+6. `supabase.py provision` (cria o projeto, aguarda ACTIVE, grava `base.env`) — perguntar telemetria antes (off ou DSN) e passar `--sentry`; se recusar com `limite_free_provavel`, mostrar a contagem, pedir OK e repetir com `--force`
 7. `db-apply --file base.env --sql supabase/baseline.sql` (schema no banco, ANTES de seguir; sem ele o worker morre com "harness ausente")
 8. `create-project` + `ensure-service` (descoberta por nome; cria só o ausente, projeto com descrição)
 9. `env-sync --file base.env --app-fqdn <APP_FQDN>`

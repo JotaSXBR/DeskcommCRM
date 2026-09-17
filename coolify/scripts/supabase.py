@@ -72,8 +72,14 @@ def cmd_provision(a):
         sys.exit(1)
     print("[1/6] organizacao: %s" % names[a.org_id], flush=True)
     s, projs = sb_api(token, "GET", "/projects")
+    existentes = [p for p in projs if isinstance(p, dict)
+                  and p.get("organization_id") == a.org_id] if s == 200 else []
+    if len(existentes) >= 2 and not a.force:
+        print(json.dumps({"ok": False, "reason": "limite_free_provavel",
+                          "existentes": len(existentes)}))
+        sys.exit(1)
     if s == 200:
-        for p in projs:
+        for p in existentes:
             if (isinstance(p, dict) and p.get("name") == a.name
                     and p.get("organization_id") == a.org_id):
                 print(json.dumps({"ok": False, "reason": "projeto_ja_existe",
@@ -319,6 +325,7 @@ def main():
     v.add_argument("--ssh", required=True)
     v.add_argument("--out", required=True)
     v.add_argument("--sentry", required=True)
+    v.add_argument("--force", action="store_true")
     e = sub.add_parser("marca-emails")
     e.add_argument("--token-file", required=True)
     e.add_argument("--file", required=True)
