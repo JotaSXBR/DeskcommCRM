@@ -143,3 +143,11 @@ backups/
 # commit posterior de remoção não tira o blob.
 .qa-backups/
 *.dump
+
+# Instalador Coolify (branch coolify/overlay): artefatos transitórios com
+# segredos vivos — token do painel, token do Supabase, env gerado. NUNCA
+# commitar; vivem só no disco de quem opera a VPS.
+*.token
+base.env
+__pycache__/
+*.pyc

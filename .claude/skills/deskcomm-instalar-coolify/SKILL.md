@@ -21,9 +21,14 @@ Siga SOMENTE este guia. Não aplique outras skills nem a doutrina de contribuiç
 3. `coolify.py wait-admin --ssh root@<VPS_IP>` — se já há admin, pula sozinho; senão o usuário cria no browser do painel.
 4. `coolify.py enable-api --ssh root@<VPS_IP>` + `coolify.py token --ssh root@<VPS_IP> --out coolify.token --base-url https://<COOLIFY_FQDN>` — reusa o token se válido; arquivo `0600` transitório, nunca no log.
 5. `coolify.py instance-domain --ssh root@<VPS_IP>` — confere o FQDN do painel, nunca sobrescreve sem OK explícito.
-6. `coolify.py create-project` + `coolify.py ensure-service --project-uuid <uuid> --compose-file coolify/deskcomm.coolify.yml` — descoberta por nome (`DeskcommCRM`/`deskcommcrm`), cria só o ausente.
-7. `coolify.py env-sync --file base.env --app-fqdn <APP_FQDN> --base-url https://<COOLIFY_FQDN> --token-file coolify.token --service-uuid <uuid>` — deriva `DOMAIN`, webhook, `NEXT_PUBLIC_APP_URL` e `NEXT_PUBLIC_ADMIN_URL`.
-8. `coolify.py set-fqdn --ssh root@<VPS_IP> --app-id <id> --fqdn <APP_FQDN>` + `restart` (com OK explícito em produção) + `poll-tls https://<APP_FQDN>`.
-9. Dono no browser do app → onboarding → QR do WhatsApp → `healthcheck.sh` do kit original.
+6. `supabase.py provision --token-file supabase.token --org-id <org> --app-fqdn <APP_FQDN> --ssh root@<VPS_IP> --out base.env` — cria o projeto, aguarda ACTIVE, grava `base.env` (nome duplicado recusa sem criar).
+7. `coolify.py db-apply --file base.env --sql supabase/baseline.sql --ssh root@<VPS_IP>` — extensões + schema no banco, ANTES de seguir (sem este passo o worker morre com "harness ausente").
+8. `coolify.py create-project` + `coolify.py ensure-service --project-uuid <uuid> --compose-file coolify/deskcomm.coolify.yml` — descoberta por nome (`DeskcommCRM`/`deskcommcrm`), cria só o ausente (projeto com descrição).
+9. `coolify.py env-sync --file base.env --app-fqdn <APP_FQDN> --base-url https://<COOLIFY_FQDN> --token-file coolify.token --service-uuid <uuid>` — deriva `DOMAIN`, webhook, `NEXT_PUBLIC_APP_URL` e `NEXT_PUBLIC_ADMIN_URL`.
+10. `coolify.py set-fqdn --ssh root@<VPS_IP> --app-id <id> --fqdn <APP_FQDN>` + `restart` (com OK explícito em produção) + `poll-tls https://<APP_FQDN>`.
+11. `supabase.py marca-emails --token-file supabase.token --file base.env --app-fqdn <APP_FQDN>` — URLs dos e-mails de acesso (marca recusada em free sem SMTP: `free_tier_sem_smtp`).
+12. `coolify.py bootstrap-owner --file base.env --email <dono> --password <senha> --ssh root@<VPS_IP>` — dono confirmado + org + admin, sem depender de e-mail.
+13. **Pergunte obrigatoriamente** se o operador quer configurar o Resend; explique que sem ele o app funciona, mas convites e e-mails de LGPD não saem. Se fornecer a chave, confirme o remetente/domínio e só então execute `coolify.py env-set RESEND_API_KEY=<chave> RESEND_FROM_EMAIL=<remetente> --service-uuid <uuid> --base-url https://<COOLIFY_FQDN> --token-file coolify.token` + `restart` + `poll-tls` — a chave também destrava a marca do passo 11. Se recusar, registre que foi pulado.
+14. Dono no browser do app → login → onboarding → QR do WhatsApp → `healthcheck.sh` do kit original.
 
 Detalhe de cada passo, regras e o fluxo de update (redeploy com tags oficiais): `coolify/README.md`. Guardrails e armadilhas: `coolify/skill/guardrails.md`, `coolify/skill/gotchas.md`.
