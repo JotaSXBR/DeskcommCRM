@@ -194,3 +194,89 @@ teve OK antes de entrar), todos medidos contra a VPS real.
   wrapper no `coolify.py`.
 - SSH real (install-coolify, recursos, cron, guard em VPS) valida na próxima run;
   segredos seguem fora do repo (`*.token`, `base.env` ignorados).
+
+## Update pela skill (2026-09-18, docs + comandos das Tasks 1–5)
+
+26. Versão listada pelo agente, escolhida pelo operador: `version-status` lê a
+    instalada no painel e lista as releases posteriores; `--ref` numerada, tag
+    móvel recusa (`ref_invalida`). Janela declarada + `backup-agora` validado +
+    OK explícito antes de qualquer escrita. Sem cron, sem gatilho automático.
+    Falha após alteração no banco: parar + diagnóstico + autorização por passo,
+    sem restauração automática; voltar imagens nunca é recuperação de dados.
+27. `update --ref` executa snapshot → sync-compose (PATCH) → db-apply → env-sync
+    (sempre com prévia mascarada e guarda do painel; sem leitura aborta com
+    `env_painel_nao_lido`, nunca grava) → restart → poll-tls. `--ssh` é
+    opcional na chamada, mas o caminho direto sem ele aborta com `ssh_ausente`.
+    Interrupção retoma com `--resume --op` sem repetir SQL; `--dry-run` de
+    retomada não revalida o estado (benigno, documentado). Em `nada_a_fazer`
+    nada é escrito, nem snapshot. Saída multi-linha com resumo final na última
+    linha (contrato).
+28. Dívidas aceitas: retorno do `backup-agora` sem `ext_ok`; quoting via
+    `shlex` no `backup-agora` (stdlib, sem imprimir credenciais). Etapa "Update"
+    idêntica em `coolify/skill/SKILL.md` + 2 espelhos (conferido por hash).
+
+## Validado sem SSH (2026-09-18)
+
+- `py_compile` OK nos 2 scripts + teste; `--help` OK em `version-status`,
+  `update` e `backup-agora`.
+- `py -3 -m unittest discover -s coolify/tests`: 14/14 OK, zero rede, zero SSH.
+- Espelhos byte-idênticos (Get-FileHash); gate `skills-embutidas` pulado sem
+  `node_modules` (`gate_espelhos_pulado_sem_node_modules`, precedente acima).
+
+## Primeiro update real (2026-09-18, VPS de testes `crm.fluxie.com.br`)
+
+- `1.28.0` → `1.34.0` nas 3 imagens (`app`, `worker`, `scheduler`),
+  `running:healthy`; WAHA/srh/redis intocados. TLS 200, worker com
+  `agent-engine pronto`, app `Ready` (só warnings cosméticos de marca).
+- Backup prévio validado: `db-20260918-112417.sql.gz` +
+  `waha-20260918-112417.tgz` em `/data/coolify/backups-deskcomm/`.
+- Achados que viraram fix no overlay, todos medidos contra a VPS real:
+  29. `GET /services/<uuid>` não devolve `docker_compose_raw` (só
+      `applications[].image`) → helper `texto_imagens_painel` com fallback,
+      usado em `version-status`, pré-voo e resume (+2 testes, 18/18).
+  30. `NameError painel_compose` travou o update antes de qualquer escrita
+      (fail-closed funcionou) → 1 linha, retry seguiu.
+  31. `pg_dump` 16 recusa servidor 17.6 (`server version mismatch`) →
+      `backup.py` usa `postgres:17-alpine`.
+  32. `poll-tls` (18×5s) desistiu durante o pull das imagens (404 de timing)
+      → etapa `aguardar-deploy`: espera containers na tag nova `Up` via SSH
+      (60×10s, `deploy_nao_estabilizou`) antes do `poll-tls` (+2 testes).
+- `--backup` no comando é trava, não restore: valida `test -s` no pré-voo e
+  registra no resumo (`nao_informado` quando ausente); restore segue manual
+  e só com OK do operador.
+
+## Envs sem arquivo local (2026-09-18, pós primeiro update)
+
+- `update` e `backup-agora` aceitam `--file` vazio: as envs vêm do painel
+  (`GET /services/<uuid>/envs`, provado na 4.3.21) em tempo de execução,
+  só em memória — nenhum arquivo com segredo toca o disco. Helpers
+  `buscar_env_painel`/`extrair_env_lista` (+2 testes, 20/20) e
+  `resolver_env_base`; `env_arquivo_nao_lido` quando o `--file` informado
+  não abre. Skill atualizada nos 3 arquivos (bloco idêntico).
+
+## Sync incremental de envs (2026-09-18, pós primeiro update)
+
+- `env-sync` e o passo `env-sync` do update enviam por PATCH só o diff
+  (`diff_env`): chaves novas ou com valor alterado; sem mudança, nada é
+  regravado (`sem_mudancas`) e segredo estável nem trafega. Segredos
+  gerados (`SRH_TOKEN`, `IMPERSONATE_COOKIE_SECRET`) e defaults Upstash
+  passam a preferir o valor do painel — nunca regeneram nem derrubam
+  override manual. Prévia mostra só o diff, mascarado. Skill atualizada
+  nos 3 arquivos (bloco idêntico).
+
+## Segundo update real (2026-09-21, VPS `crm.fluxie.com.br`)
+
+- `1.35.0` → `1.41.0` nas 3 imagens (`app`, `worker`, `scheduler`),
+  `disponiveis` zerado após o update (`nada_a_fazer`).
+- Backup prévio validado: `db-20260921-102803.sql.gz` +
+  `waha-20260918-163913.tgz` (waha de 18/09, snapshot de hoje pulado sem
+  `--waha-volume`) em `/data/coolify/backups-deskcomm/`.
+- `update --dry-run` antes (8 etapas, sem escrita); update real com
+  `--backup db-20260921-102803.sql.gz --app-fqdn crm.fluxie.com.br
+  --ssh root@100.109.163.58`; prévia de env `total 0` (`sem_mudancas`).
+- Pós-deploy: `restart` enfileirado 200, `poll-tls` 200 na tentativa 1;
+  `version-status` confirma `1.41.0` nas 3 imagens.
+- Snapshot do compose em diretório temporário do SO (fora do repo, sem
+  segredos); `sql: aplicado`, `motivo_sql: comparacao_indisponivel`.
+- `healthcheck.sh` do kit original não aplicável aqui (espera compose
+  local); prova é `poll-tls` 200 + `version-status` 1.41.0.

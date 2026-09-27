@@ -11,8 +11,10 @@ import gzip
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import date
 
@@ -82,7 +84,7 @@ def cmd_run(a):
         sys.exit(1)
     os.makedirs(a.dir, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    p = subprocess.run(["docker", "run", "--rm", "postgres:16-alpine",
+    p = subprocess.run(["docker", "run", "--rm", "postgres:17-alpine",
                         "pg_dump", db_url, "--no-owner", "--no-privileges"],
                        capture_output=True, timeout=900)
     if p.returncode != 0:
@@ -146,6 +148,90 @@ def cmd_install_cron(a):
     print(json.dumps({"ok": r["ok"], "cron": cron if r["ok"] else ""}))
 
 
+def cmd_backup_agora(a):
+    from remote import put_file, run_script_file  # noqa: E402
+    from coolify import buscar_env_painel  # noqa: E402
+    if (a.file or ""):
+        env = read_env_file(a.file)
+    elif (a.base_url or "") and (a.token_file or "") and (a.service_uuid or ""):
+        try:
+            env = buscar_env_painel(a.base_url, a.token_file, a.service_uuid)
+        except ValueError as e:
+            print(json.dumps({"ok": False, "reason": "env_painel_nao_lido",
+                              "detalhe": str(e)[:200]}))
+            sys.exit(1)
+    else:
+        env = {}
+    db_url = env.get("SUPABASE_DB_URL", "")
+    if not db_url:
+        print(json.dumps({"ok": False, "reason": "db_url_ausente"}))
+        sys.exit(1)
+    env_remoto = BACKUP_DIR + "/deskcomm-update.env"
+    r = run_script_file(a.ssh, "set -euo pipefail\nmkdir -p " + BACKUP_DIR + "\n"
+                        "echo '{\"dir_ok\":true}'\n")
+    if not r["ok"]:
+        print(json.dumps({"ok": False, "reason": "mkdir_falhou"}))
+        sys.exit(1)
+    fd, tmp_local = tempfile.mkstemp(suffix=".env")
+    os.close(fd)
+    with open(tmp_local, "w", encoding="utf-8", newline="\n") as f:
+        f.write("SUPABASE_DB_URL=%s\n" % db_url)
+    try:
+        r = put_file(a.ssh, tmp_local, env_remoto, "600")
+    finally:
+        os.unlink(tmp_local)
+    if not r["ok"]:
+        run_script_file(a.ssh, "rm -f " + env_remoto + "\n")
+        print(json.dumps({"ok": False, "reason": "env_put_falhou"}))
+        sys.exit(1)
+    r = put_file(a.ssh, os.path.abspath(__file__),
+                 BACKUP_DIR + "/backup.py", "600")
+    if not r["ok"]:
+        run_script_file(a.ssh, "rm -f " + env_remoto + "\n")
+        print(json.dumps({"ok": False, "reason": "script_put_falhou"}))
+        sys.exit(1)
+    script = ("set -euo pipefail\n"
+              "trap \"rm -f " + env_remoto + "\" EXIT\n"
+              "mkdir -p " + BACKUP_DIR + "\n"
+              "python3 " + BACKUP_DIR + "/backup.py run --env-file " + env_remoto
+              + " --dir " + BACKUP_DIR + "/ --waha-volume " + shlex.quote(a.waha_volume) + "\n"
+              "db_atual=$(ls -t " + BACKUP_DIR + "/db-*.sql.gz 2>/dev/null | head -n1 || true)\n"
+              "test -s \"$db_atual\"\n"
+              "echo \"BACKUP_AGORA_DB:$(basename \"$db_atual\")\"\n"
+              "waha_atual=$(ls -t " + BACKUP_DIR + "/waha-*.tgz 2>/dev/null | head -n1 || true)\n"
+              "if [ -n \"$waha_atual\" ] && [ -f \"$waha_atual\" ]; then echo \"BACKUP_AGORA_WAHA:$(basename \"$waha_atual\")\"; else echo \"BACKUP_AGORA_WAHA:snapshot_pulado\"; fi\n")
+    r = run_script_file(a.ssh, script)
+    db_nome = ""
+    waha_marcador = ""
+    interno = None
+    for line in (r["stdout"] or "").split("\n"):
+        line = line.strip()
+        if line.startswith("BACKUP_AGORA_DB:"):
+            db_nome = line.split(":", 1)[1].strip()
+        elif line.startswith("BACKUP_AGORA_WAHA:"):
+            waha_marcador = line.split(":", 1)[1].strip()
+        elif line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("ok") is True and obj.get("db"):
+                interno = obj
+    interno_db = str(interno.get("db") or "") if isinstance(interno, dict) else ""
+    db_final = interno_db or db_nome
+    if not r["ok"] or not db_final:
+        print(json.dumps({"ok": False, "reason": "backup_nao_validado"}))
+        sys.exit(1)
+    waha_nome = ""
+    if isinstance(interno, dict):
+        waha_nome = str(interno.get("waha") or "")
+    if not waha_nome:
+        waha_nome = waha_marcador
+    if not waha_nome:
+        waha_nome = "snapshot_pulado"
+    print(json.dumps({"ok": True, "db": db_final, "waha": waha_nome, "dir": BACKUP_DIR}))
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -153,11 +239,17 @@ def main():
     rr.add_argument("--dir", required=True); rr.add_argument("--waha-volume", default="")
     ic = sub.add_parser("install-cron"); ic.add_argument("--ssh", required=True)
     ic.add_argument("--file", required=True); ic.add_argument("--waha-volume", default="")
+    ba = sub.add_parser("backup-agora"); ba.add_argument("--ssh", required=True)
+    ba.add_argument("--file", default=""); ba.add_argument("--waha-volume", default="")
+    ba.add_argument("--base-url", default=""); ba.add_argument("--token-file", default="")
+    ba.add_argument("--service-uuid", default="")
     a = p.parse_args()
     if a.cmd == "run":
         cmd_run(a)
     elif a.cmd == "install-cron":
         cmd_install_cron(a)
+    elif a.cmd == "backup-agora":
+        cmd_backup_agora(a)
 
 
 if __name__ == "__main__":

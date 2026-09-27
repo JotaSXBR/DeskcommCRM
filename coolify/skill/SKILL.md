@@ -30,7 +30,29 @@ Chave de IA é opcional.
 14. Dono no browser do app → login → onboarding → QR do WhatsApp → `healthcheck.sh`
 15. (opcional, recomendado) `backup.py install-cron --ssh root@IP --file base.env` — dump diário + waha, retenção 7+4+2 em `/data/coolify/backups-deskcomm/`
 
-Update depois da instalação é redeploy com tags oficiais: subir `UPSTREAM_REF` no template + `sync-compose` + `env-sync` + `restart`.
+## Update (redeploy com tags oficiais, sem cron)
+
+Sem agendador nem gatilho automático: todo update é acionado pelo operador, nesta ordem.
+
+1. `version-status --base-url https://<COOLIFY_FQDN> --token-file coolify.token --service-uuid <uuid>` — lê a tag instalada no painel e lista as releases oficiais posteriores. O operador escolhe a alvo; `--ref` é sempre numerada (`X.Y.Z`, nunca `latest`/`main`/`stable`, senão `ref_invalida`).
+2. Declare a janela de manutenção e rode `backup-agora --ssh root@<VPS_IP> [--file <env>] [--waha-volume <vol>]` — sem `--file`, passe `--base-url/--token-file/--service-uuid` e as envs vêm do painel (só em memória, sem arquivo com segredo). Só prossiga com `{"ok": true, ...}` (sem artefato válido: `backup_nao_validado`). Nada é escrito antes do OK explícito do operador.
+3. `update --base-url https://<COOLIFY_FQDN> --token-file coolify.token --service-uuid <uuid> --ref <escolhida> --compose-file coolify/deskcomm.coolify.yml [--file <env>] [--sql <baseline-da-release.sql>] [--backup <artefato>] [--app-fqdn <APP_FQDN>] [--ssh root@<VPS_IP>]` — rode com `--dry-run` antes (opcional, só imprime o plano). Sem `--sql`, o `supabase/baseline.sql` da tag `v<ref>` do repositório oficial é baixado para um diretório temporário sem trocar a branch do checkout. `--file` e `--ssh` são opcionais na chamada: sem `--file`, as envs vêm do painel em tempo de execução (só em memória); sem `--ssh` o caminho direto aborta com `ssh_ausente`. `--skip-sql` só com motivo registrado no resumo.
+4. O comando já termina com `restart` + `poll-tls`; confira o TLS 200, rode o `healthcheck.sh` e registre anterior → nova, backup, snapshot e motivo do SQL no `HISTORICO.md`.
+
+Saída em JSON multi-linha: a prévia do env (`preview: true`, valores mascarados, só chaves novas/alteradas — sem mudança, nada é regravado) sai no meio e o resumo final (`ok`, `anterior`, `nova`, `backup` (<artefato>|`nao_informado`), `snapshot`, `sql`, `motivo_sql`, `registro`) na última linha — leia a última linha. Em `nada_a_fazer` (instalada igual à alvo) nada é escrito, nem snapshot. Interrupção retoma com `update ... --resume --op <registro>` sem repetir SQL concluído (etapa feita é revalidada; divergência aborta com `estado_divergente`); `--resume --op` com `--dry-run` só imprime o plano, sem revalidar o estado (benigno). Registro da operação mora em diretório temporário do SO, fora do repo, sem segredos.
+
+| sintoma | conduta |
+|---|---|
+| `ref_invalida` | alvo tem que ser `X.Y.Z` numerada; tag móvel nunca entra |
+| `tags_divergentes` | as 3 imagens Deskcomm discordam — inspecione o compose no painel, nunca adivinhe a instalada |
+| `ssh_ausente` | informe `--ssh root@<VPS_IP>`; sem SSH o caminho direto não prossegue |
+| `op_invalida` | registro de `--op` ilegível ou com `ref` diferente da pedida — confira o arquivo e a `--ref` |
+| `estado_divergente` | registro diz feito mas painel/banco discordam — pare e decida com o operador, nunca force |
+| `env_painel_nao_lido` | envs do painel inacessíveis — aborte, nunca grave env sem ler o painel |
+| `env_arquivo_nao_lido` | o `--file` informado não foi lido — confira o caminho ou omita para ler do painel |
+| `backup_nao_validado` | backup sob demanda sem artefato válido — não inicie o update |
+| falha depois de alterar o banco | pare, mostre o diagnóstico (etapa, alterado até aqui, pendente) e peça autorização para cada passo de recuperação; sem restore automático, e voltar imagens não é recuperação de dados |
+| `nada_a_fazer` | instalada igual à alvo — nada escrito, nada a retomar |
 
 Narre serviço a serviço. Prévia antes de gravar. Dono cria contas no browser.
 

@@ -30,9 +30,9 @@ Clonado local e executado daqui. Sem marketplace, sem build na VPS, sem tocar no
 13. (opcional, Enter pula) Resend: `env-set RESEND_API_KEY=<chave> RESEND_FROM_EMAIL=<remetente> --service-uuid <uuid> ...` + `restart` + `poll-tls` — liga convites e e-mails de LGPD; a mesma chave serve de SMTP do Supabase e destrava a marca do passo 11
 14. Dono no browser → login → onboarding → WhatsApp QR (app do celular em Aparelhos conectados) → `healthcheck.sh`
 
-## Atualização (update = redeploy com tags oficiais)
+## Atualização (update = version-status → escolha → backup → update --ref)
 
-As imagens vêm do repositório oficial (`ghcr.io/melgarafael/...`), nunca do fork. Atualizar é subir os números de `UPSTREAM_REF` no `deskcomm.coolify.yml` e rodar: `sync-compose --service-uuid <uuid> --compose-file deskcomm.coolify.yml` + `env-sync` + `restart` (com OK explícito). Sem build, sem clone do produto. O `sync-compose` usa PATCH (provado na 4.3.19; PUT dá 405); se mesmo assim responder 404/405, o fallback é colar o template em Configuration › Edit Compose File › Save › Deploy.
+As imagens vêm do repositório oficial (`ghcr.io/melgarafael/...`), nunca do fork. Sem cron, sem build, sem clone do produto: todo update é acionado pelo operador. `version-status --base-url https://<COOLIFY_FQDN> --token-file coolify.token --service-uuid <uuid>` mostra a instalada e as releases posteriores; o operador escolhe a alvo (`--ref` numerada, nunca `latest`/`main`/`stable`). Depois `backup.py backup-agora --ssh root@<VPS_IP> --file base.env [--waha-volume <vol>]` — só prossiga com `{"ok": true}` — e `coolify.py update --base-url ... --token-file ... --service-uuid <uuid> --ref <escolhida> --compose-file deskcomm.coolify.yml --file base.env --sql <baseline-da-release.sql> [--app-fqdn <APP_FQDN>]` (`--dry-run` antes, opcional). O comando troca as tags Deskcomm via PATCH — as 3 do núcleo mais a do voice-agent quando o compose o traz (perfis voz/telefonia continuam opcionais; provado na 4.3.19; PUT dá 405), preserva os segredos do painel e termina com `restart` + `poll-tls`. Se o PATCH responder 404/405, o fallback é colar o template em Configuration › Edit Compose File › Save › Deploy. Interrupção retoma com `--resume --op <registro>` sem repetir SQL concluído.
 
 ## Backup (pós-install, opcional mas recomendado)
 

@@ -8,6 +8,8 @@ casar, carregue o guia antes de agir — a pessoa pode não saber que ele existe
 
 - instalar, subir, atualizar, consertar a instalação numa VPS, domínio, Supabase, WhatsApp
   que não conecta → `deskcomm-instalar`
+- instalar numa VPS que JÁ TEM Coolify (painel com domínio próprio), redeploy ou
+  update das imagens oficiais → `deskcomm-instalar-coolify`
 - configurar o CRM para um cliente ou nicho (clínica, imobiliária, serviços, curso, loja):
   agentes, roteadores, follow-ups, base de conhecimento → `deskcomm-cliente-novo`
 - desempenho, conversão, custo de IA, funil, relatório, "o agente está vendendo?" → `deskcomm-metricas`

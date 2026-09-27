@@ -1,0 +1,6 @@
+interface:
+  display_name: "Instalar via Coolify"
+  short_description: "Instala o DeskcommCRM numa VPS que já tem Coolify, via SSH root + API, sem processo manual"
+  default_prompt: "Use a skill deskcomm-instalar-coolify e me conduza na instalação do DeskcommCRM na minha VPS com Coolify."
+policy:
+  allow_implicit_invocation: true

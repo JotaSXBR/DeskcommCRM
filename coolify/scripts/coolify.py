@@ -5,19 +5,24 @@ Payload remoto sempre via arquivo (remote.py), nunca inline. Compose raw sempre 
 Uso: python3 coolify.py <comando> --ssh root@IP [opções]"""
 import argparse
 import base64
+import io
 import json
 import os
 import re
 import secrets
 import shlex
 import socket
+import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+from contextlib import redirect_stdout
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from remote import run_script_file, run_lines, run_stdin_file  # noqa: E402
+from backup import BACKUP_DIR  # noqa: E402
 
 
 def read_token(token_file):
@@ -166,6 +171,111 @@ def find_by_name(items, name):
     return None
 
 
+IMAGENS_DESKCOMM = ("deskcommcrm", "deskcomm-worker", "deskcomm-scheduler")
+ENV_PRESERVADAS_PAINEL = ("SRH_TOKEN", "UPSTASH_REDIS_REST_TOKEN",
+                          "RESEND_API_KEY", "RESEND_FROM_EMAIL",
+                          # Segredos pos-v1.28 configuraveis pelo painel: o base.env
+                          # gerado nao os carrega, e sincronizar "" apagaria o valor.
+                          "TENANT_PROVISIONING_SECRET", "SMTP_PASSWORD",
+                          "ARI_PASSWORD", "GOOGLE_ADS_OAUTH_CLIENT_SECRET",
+                          "GOOGLE_ADS_DEVELOPER_TOKEN", "TRANSCRIPTION_API_KEY")
+
+
+def validar_ref(ref):
+    ref = (ref or "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", ref):
+        raise ValueError("ref_invalida (use X.Y.Z numerica, nunca latest/main/stable)")
+    return ref
+
+
+def extrair_tags_imagens(compose):
+    tags = {}
+    for nome in IMAGENS_DESKCOMM:
+        m = re.search(r"image:\s*ghcr\.io/melgarafael/" + re.escape(nome) + r":([^\s'\"]+)",
+                      compose)
+        if m:
+            tags[nome] = m.group(1)
+    return tags
+
+
+def trocar_tags_deskcomm(compose, ref):
+    ref = validar_ref(ref)
+
+    def troca(m):
+        return m.group(1) + ref
+
+    # voice-agent entra no swap mas NAO no IMAGENS_DESKCOMM: por ser perfil
+    # opcional (telefonia) e o aguardar-deploy cobra todos os nomes da tupla;
+    # exigi-lo ali travaria todo update de quem nao usa telefonia.
+    return re.sub(r"(ghcr\.io/melgarafael/(?:deskcommcrm|deskcomm-worker|deskcomm-scheduler|deskcomm-voice-agent):)[^\s'\"]+",
+                  troca, compose)
+
+
+def comparar_versoes(instalada, alvo):
+    atual = validar_ref(instalada)
+    nova = validar_ref(alvo)
+    ta = tuple(int(x) for x in atual.split("."))
+    tn = tuple(int(x) for x in nova.split("."))
+    if tn == ta:
+        return "nada_a_fazer"
+    if tn < ta:
+        raise ValueError("alvo_anterior_a_instalada")
+    return "update"
+
+
+def mesclar_env_update(painel, arquivo):
+    out = dict(arquivo)
+    for k in ENV_PRESERVADAS_PAINEL:
+        if painel.get(k):
+            out[k] = painel[k]
+    for k in ("SRH_TOKEN", "IMPERSONATE_COOKIE_SECRET"):
+        if not out.get(k):
+            out.pop(k, None)
+    return out
+
+
+def baseline_mudou(sql_novo, sql_atual):
+    if sql_atual is None:
+        return True
+    return bytes(sql_novo) != bytes(sql_atual)
+
+
+def baixar_baseline_release(ref, dir_saida):
+    ref = validar_ref(ref)
+    url = ("https://raw.githubusercontent.com/melgarafael/DeskcommCRM/"
+           + "v" + ref + "/supabase/baseline.sql")
+    req = urllib.request.Request(url, headers={"Accept": "text/plain"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        corpo = r.read()
+    if not corpo.strip():
+        raise ValueError("baseline_vazio_na_release")
+    destino = os.path.join(dir_saida, "baseline-" + ref + ".sql")
+    with open(destino, "wb") as f:
+        f.write(corpo)
+    return destino
+
+
+def novo_registro_operacao(ref, dir_saida):
+    return {"ref": validar_ref(ref), "dir_saida": dir_saida, "etapas": []}
+
+
+def marcar_etapa(op, etapa, ok, detalhe=""):
+    op["etapas"].append({"etapa": etapa, "ok": bool(ok), "detalhe": detalhe})
+    return op
+
+
+ORDEM_ETAPAS_UPDATE = ("snapshot", "sync-compose", "db-apply",
+                       "env-sync", "restart", "aguardar-deploy", "poll-tls")
+
+
+def proxima_etapa(op):
+    feitas = {e["etapa"] for e in op.get("etapas", []) if e.get("ok")}
+    for etapa in ORDEM_ETAPAS_UPDATE:
+        if etapa not in feitas:
+            return etapa
+    return "concluido"
+
+
 def cmd_token(a):
     if a.base_url and os.path.exists(a.out):
         s, _ = api_req(a.base_url, a.out, "GET", "/servers")
@@ -257,6 +367,129 @@ def cmd_sync_compose(a):
     print(json.dumps({"status": s, "body": b[:2000]}))
 
 
+def texto_imagens_painel(payload):
+    try:
+        bruto = payload.get("docker_compose_raw", "")
+    except Exception:
+        bruto = ""
+    try:
+        compose = base64.b64decode(bruto).decode("utf-8", "replace")
+    except Exception:
+        compose = ""
+    if "ghcr.io/melgarafael/" in compose:
+        return compose
+    try:
+        apps = payload.get("applications", [])
+    except Exception:
+        apps = []
+    linhas = []
+    if isinstance(apps, list):
+        for app in apps:
+            if isinstance(app, dict) and app.get("image"):
+                linhas.append("image: " + str(app["image"]))
+    return "\n".join(linhas) + ("\n" if linhas else "")
+
+
+def containers_novos_ok(saida_ps, ref):
+    ref = validar_ref(ref)
+    vistos = set()
+    for linha in (saida_ps or "").split("\n"):
+        partes = linha.split("|")
+        if len(partes) != 3:
+            continue
+        imagem = partes[1].strip()
+        estado = partes[2].strip()
+        for nome in IMAGENS_DESKCOMM:
+            if imagem == "ghcr.io/melgarafael/" + nome + ":" + ref and estado.startswith("Up"):
+                vistos.add(nome)
+    return set(IMAGENS_DESKCOMM) <= vistos
+
+
+def extrair_env_lista(itens):
+    env = {}
+    if isinstance(itens, list):
+        for it in itens:
+            if isinstance(it, dict) and it.get("key"):
+                env[it["key"]] = it.get("real_value", it.get("value", "")) or ""
+    return env
+
+
+def diff_env(atual, desejado):
+    diff = {}
+    for k, v in desejado.items():
+        if atual.get(k, "") != v:
+            diff[k] = v
+    return diff
+
+
+def buscar_env_painel(base_url, token_file, service_uuid):
+    s, b = api_req(base_url, token_file, "GET", "/services/" + service_uuid + "/envs")
+    if s != 200:
+        raise ValueError("env_painel_nao_lido status=%d" % s)
+    try:
+        corpo = json.loads(b)
+    except Exception:
+        raise ValueError("env_painel_nao_lido formato_invalido")
+    itens = corpo.get("data", []) if isinstance(corpo, dict) else corpo
+    if not isinstance(itens, list):
+        raise ValueError("env_painel_nao_lido formato_inesperado")
+    return extrair_env_lista(itens)
+
+
+def resolver_env_base(a):
+    if (a.file or ""):
+        return parse_env_file(a.file)
+    return buscar_env_painel(a.base_url, a.token_file, a.service_uuid)
+
+
+def listar_releases_github(repo):
+    url = "https://api.github.com/repos/" + repo + "/releases?per_page=30"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def cmd_version_status(a):
+    s, b = api_req(a.base_url, a.token_file, "GET", "/services/" + a.service_uuid)
+    if s != 200:
+        print(json.dumps({"ok": False, "reason": "service_nao_lido", "status": s}))
+        sys.exit(1)
+    try:
+        payload = json.loads(b)
+    except Exception:
+        payload = {}
+    tags = extrair_tags_imagens(texto_imagens_painel(payload))
+    vals = sorted({t for t in tags.values() if re.fullmatch(r"\d+\.\d+\.\d+", t)},
+                  key=lambda v: tuple(int(x) for x in v.split(".")))
+    instalada = vals[-1] if vals else ""
+    if not instalada:
+        print(json.dumps({"ok": False, "reason": "tag_instalada_nao_identificada",
+                          "tags": tags}))
+        sys.exit(1)
+    if len(set(tags.values())) > 1:
+        print(json.dumps({"ok": False, "reason": "tags_divergentes", "tags": tags}))
+        sys.exit(1)
+    disponiveis = []
+    try:
+        for rel in listar_releases_github("melgarafael/DeskcommCRM"):
+            tag = (rel.get("tag_name") or "").lstrip("v")
+            if re.fullmatch(r"\d+\.\d+\.\d+", tag):
+                try:
+                    if comparar_versoes(instalada, tag) == "update":
+                        disponiveis.append(tag)
+                except ValueError:
+                    pass
+    except Exception as e:
+        print(json.dumps({"ok": False, "reason": "releases_nao_listadas",
+                          "detalhe": str(e)[:200]}))
+        sys.exit(1)
+    disponiveis = sorted(set(disponiveis),
+                         key=lambda v: tuple(int(x) for x in v.split(".")))
+    print(json.dumps({"ok": True, "instalada": instalada, "tags": tags,
+                      "disponiveis": disponiveis,
+                      "acao": "escolha_do_operador" if disponiveis else "nada_a_fazer"}))
+
+
 def cmd_instance_domain(a):
     r = run_script_file(a.ssh, "set -euo pipefail\n"
         "docker exec -i coolify-db psql -U coolify -d coolify -tAc "
@@ -295,19 +528,33 @@ def parse_env_file(path):
                 continue
             k, v = line.split("=", 1)
             k = k.strip()
+            v = v.strip()
+            if v.startswith("#"):
+                # `.env.example` novo traz `CHAVE=   # comentario`: sem isto,
+                # o texto do comentario virava valor e era sincronizado.
+                v = ""
             if k:
-                env[k] = v.strip()
+                env[k] = v
     return env
 
 
 def cmd_env_sync(a):
-    env = parse_env_file(a.file)
+    env = parse_env_file(a.file) if (a.file or "") else {}
     if a.app_fqdn:
         base = "https://" + a.app_fqdn
         env["DOMAIN"] = a.app_fqdn
         env["WAHA_WEBHOOK_BASE_URL"] = base
         env["NEXT_PUBLIC_APP_URL"] = base
         env["NEXT_PUBLIC_ADMIN_URL"] = base
+    try:
+        painel = buscar_env_painel(a.base_url, a.token_file, a.service_uuid)
+        painel_lido = True
+    except ValueError:
+        painel = {}
+        painel_lido = False
+    for k in ("SRH_TOKEN", "IMPERSONATE_COOKIE_SECRET") + ENV_PRESERVADAS_PAINEL:
+        if painel.get(k):
+            env[k] = painel[k]
     # Redis interno (srh) e o padrao, igual ao install.sh do kit: o token do
     # Upstash e o proprio SRH_TOKEN e a URL aponta para o conteiner srh.
     # Upstash Cloud continua possivel como override manual (valor presente vence).
@@ -316,16 +563,18 @@ def cmd_env_sync(a):
     if not env.get("IMPERSONATE_COOKIE_SECRET"):
         env["IMPERSONATE_COOKIE_SECRET"] = secrets.token_hex(32)
     if not env.get("UPSTASH_REDIS_REST_URL"):
-        env["UPSTASH_REDIS_REST_URL"] = "http://srh:80"
+        env["UPSTASH_REDIS_REST_URL"] = painel.get("UPSTASH_REDIS_REST_URL", "http://srh:80")
     if not env.get("UPSTASH_REDIS_REST_TOKEN"):
-        env["UPSTASH_REDIS_REST_TOKEN"] = env["SRH_TOKEN"]
+        env["UPSTASH_REDIS_REST_TOKEN"] = painel.get("UPSTASH_REDIS_REST_TOKEN",
+                                                     env.get("SRH_TOKEN", ""))
+    diff = diff_env(painel, env) if painel_lido else dict(env)
     if a.preview:
-        rows = [{"key": k, "value": mask(v)} for k, v in env.items()]
+        rows = [{"key": k, "value": mask(v)} for k, v in diff.items()]
         print(json.dumps({"preview": True, "total": len(rows), "env": rows}))
         return
-    data = [{"key": k, "value": v} for k, v in env.items()]
+    data = [{"key": k, "value": v} for k, v in diff.items()]
     if not data:
-        print(json.dumps({"synced": 0, "total": 0, "results": []}))
+        print(json.dumps({"synced": 0, "total": 0, "acao": "sem_mudancas", "results": []}))
         return
     s, b = api_req(a.base_url, a.token_file, "PATCH",
                    "/services/" + a.service_uuid + "/envs/bulk",
@@ -333,6 +582,7 @@ def cmd_env_sync(a):
     ok = s in (200, 201)
     print(json.dumps({"synced": len(data) if ok else 0,
                       "total": len(data),
+                      "painel": "lido" if painel_lido else "nao_lido_sync_total",
                       "results": [{"status": s, "action": "bulk-upsert",
                                    "ok": ok, "body": b[:200]}]}))
 
@@ -434,32 +684,27 @@ def cmd_bootstrap_owner(a):
     print(json.dumps({"ok": True, "auth": auth_status, "email": email}))
 
 
-def cmd_db_apply(a):
-    env = parse_env_file(a.file)
-    db_url = env.get("SUPABASE_DB_URL", "")
-    if not db_url or "'" in db_url:
-        print(json.dumps({"ok": False, "reason": "db_url_ausente_ou_invalida"}))
-        sys.exit(1)
+def aplicar_schema(db_url, sql_path, ssh):
     img = "docker run --rm postgres:16-alpine psql " + shlex.quote(db_url)
     img_stdin = "docker run --rm -i postgres:16-alpine psql " + shlex.quote(db_url)
-    e = run_lines(a.ssh, img + " -v ON_ERROR_STOP=1 -c \"create extension if not exists "
-                  "vector with schema public; create extension if not exists citext "
-                  "with schema public; create extension if not exists pg_trgm "
-                  "with schema public;\"")
-    h = run_lines(a.ssh, img + " -tAc \"select 1 from information_schema.tables "
+    run_lines(ssh, img + " -v ON_ERROR_STOP=1 -c \"create extension if not exists "
+              "vector with schema public; create extension if not exists citext "
+              "with schema public; create extension if not exists pg_trgm "
+              "with schema public;\"")
+    h = run_lines(ssh, img + " -tAc \"select 1 from information_schema.tables "
                   "where table_schema='public' and table_name='organizations' limit 1\"")
     last = (h["stdout"] or "").strip().split("\n")[-1].strip() if h["ok"] else ""
     fresh = last != "1"
     unexpected = []
     applied = False
     if fresh:
-        r = run_stdin_file(a.ssh, img_stdin + " -v ON_ERROR_STOP=1 -f -", a.sql, timeout=900)
+        r = run_stdin_file(ssh, img_stdin + " -v ON_ERROR_STOP=1 -f -", sql_path, timeout=900)
         applied = r["ok"]
         if not applied:
             tail = ((r["stdout"] or "") + "\n" + (r["stderr"] or "")).strip().split("\n")
             unexpected = tail[-5:]
     else:
-        r = run_stdin_file(a.ssh, img_stdin + " -q -f -", a.sql, timeout=900)
+        r = run_stdin_file(ssh, img_stdin + " -q -f -", sql_path, timeout=900)
         applied = True
         benign = re.compile("already exists|multiple primary keys|multiple default "
                             "values|is already a member|already a partition")
@@ -468,21 +713,450 @@ def cmd_db_apply(a):
                 unexpected.append(line[:200])
                 if len(unexpected) >= 5:
                     break
-    v = run_lines(a.ssh, img + " -tAc \"select count(*) from information_schema.tables "
+    v = run_lines(ssh, img + " -tAc \"select count(*) from information_schema.tables "
                   "where table_schema='public'\"")
     try:
         n_tables = int((v["stdout"] or "").strip().split("\n")[-1].strip())
     except (ValueError, IndexError):
         n_tables = 0
-    m = run_lines(a.ssh, img + " -tAc \"select coalesce(string_agg(t, ','), '') from "
+    m = run_lines(ssh, img + " -tAc \"select coalesce(string_agg(t, ','), '') from "
                   "(values ('job_queue'),('lead_checkpoints'),('agent_inbox_items'),"
                   "('send_ledger')) as x(t) where to_regclass('public.'||t) is null\"")
     missing = (m["stdout"] or "").strip().split("\n")[-1].strip() if m["ok"] else "?"
     ok = applied and not unexpected and n_tables >= 30 and missing == ""
-    print(json.dumps({"ok": ok, "fresh": fresh, "ext_ok": e["ok"],
-                      "tables": n_tables,
-                      "harness_missing": missing.split(",") if missing not in ("", "?") else [],
-                      "unexpected_errors": unexpected}))
+    return {"ok": ok, "fresh": fresh, "tables": n_tables,
+            "harness_missing": missing.split(",") if missing not in ("", "?") else [],
+            "unexpected_errors": unexpected}
+
+
+def cmd_db_apply(a):
+    env = parse_env_file(a.file)
+    db_url = env.get("SUPABASE_DB_URL", "")
+    if not db_url or "'" in db_url:
+        print(json.dumps({"ok": False, "reason": "db_url_ausente_ou_invalida"}))
+        sys.exit(1)
+    print(json.dumps(aplicar_schema(db_url, a.sql, a.ssh)))
+
+
+def git_show_arquivo(revisao, caminho, partida):
+    raiz = os.path.abspath(partida)
+    while not os.path.isdir(os.path.join(raiz, ".git")):
+        pai = os.path.dirname(raiz)
+        if pai == raiz:
+            raiz = os.getcwd()
+            break
+        raiz = pai
+    try:
+        p = subprocess.run(["git", "show", revisao + ":" + caminho],
+                           cwd=raiz, capture_output=True, timeout=60)
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    return p.stdout
+
+
+def cmd_update(a):
+    def abortar(op, alteradas, etapa, reason, detalhe=""):
+        marcar_etapa(op, etapa, False, detalhe or reason)
+        resto = (list(ORDEM_ETAPAS_UPDATE[ORDEM_ETAPAS_UPDATE.index(etapa):])
+                 if etapa in ORDEM_ETAPAS_UPDATE else list(ORDEM_ETAPAS_UPDATE))
+        print(json.dumps({"ok": False, "etapa": etapa, "alterado_ate_aqui": list(alteradas),
+                          "pendente": resto, "atendimento_pausado": True, "reason": reason}))
+        sys.exit(1)
+
+    def divergente(etapa):
+        print(json.dumps({"ok": False, "reason": "estado_divergente", "etapa": etapa}))
+        sys.exit(1)
+
+    def passo_snapshot(ctx):
+        op = ctx["op"]
+        snap_nome = "compose-%d.b64" % int(time.time())
+        snap_path = os.path.join(ctx["op_dir"], snap_nome)
+        with open(snap_path, "w", encoding="utf-8") as f:
+            f.write(base64.b64encode(ctx["painel_compose"].encode("utf-8")).decode("ascii"))
+        marcar_etapa(op, "snapshot", True, snap_nome)
+        ctx["snap_path"] = snap_path
+
+    def passo_sync_compose(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        novo_compose = trocar_tags_deskcomm(ctx["template"], ctx["ref"])
+        s, b = api_req(a.base_url, a.token_file, "PATCH",
+                       "/services/" + a.service_uuid,
+                       {"docker_compose_raw": base64.b64encode(novo_compose.encode("utf-8")).decode("ascii")})
+        if s not in (200, 201):
+            abortar(op, alteradas, "sync-compose", "sync_compose_falhou", "status=%d" % s)
+        alteradas.append("sync-compose")
+        marcar_etapa(op, "sync-compose", True, "status=%d" % s)
+
+    def passo_db_apply(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        if a.skip_sql:
+            ctx["motivo_sql"] = "skip_sql"
+            marcar_etapa(op, "db-apply", True, ctx["motivo_sql"])
+            return
+        try:
+            with open(ctx["sql_path"], "rb") as f:
+                sql_novo = f.read()
+        except OSError:
+            abortar(op, alteradas, "db-apply", "sql_nao_lido", ctx["sql_path"])
+            return
+        if not sql_novo:
+            abortar(op, alteradas, "db-apply", "sql_vazio", ctx["sql_path"])
+        sql_atual = git_show_arquivo("v" + ctx["instalada"], "supabase/baseline.sql",
+                                     os.path.dirname(os.path.abspath(a.compose_file)))
+        if sql_atual is not None and not baseline_mudou(sql_novo, sql_atual):
+            ctx["motivo_sql"] = "baseline_sem_mudanca"
+            marcar_etapa(op, "db-apply", True, ctx["motivo_sql"])
+        else:
+            ctx["motivo_sql"] = "comparacao_indisponivel" if sql_atual is None else "baseline_mudou"
+            env = ctx["env_base"]
+            db_url = env.get("SUPABASE_DB_URL", "")
+            if not db_url or "'" in db_url:
+                abortar(op, alteradas, "db-apply", "db_url_ausente_ou_invalida")
+            res = aplicar_schema(db_url, ctx["sql_path"], a.ssh)
+            if not res["ok"]:
+                abortar(op, alteradas, "db-apply", "db_apply_falhou",
+                        ";".join(res["unexpected_errors"])[:500] or "gate_nao_atendido")
+            ctx["sql_aplicado"] = True
+            alteradas.append("db-apply")
+            marcar_etapa(op, "db-apply", True, "tables=%d" % res["tables"])
+
+    def passo_env_sync(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        try:
+            painel = buscar_env_painel(a.base_url, a.token_file, a.service_uuid)
+        except ValueError as e:
+            abortar(op, alteradas, "env-sync", "env_painel_nao_lido", str(e)[:200])
+        arquivo = dict(ctx["env_base"])
+        if a.app_fqdn:
+            base = "https://" + a.app_fqdn
+            arquivo["DOMAIN"] = a.app_fqdn
+            arquivo["WAHA_WEBHOOK_BASE_URL"] = base
+            arquivo["NEXT_PUBLIC_APP_URL"] = base
+            arquivo["NEXT_PUBLIC_ADMIN_URL"] = base
+        mesclado = mesclar_env_update(painel, arquivo)
+        if not mesclado.get("UPSTASH_REDIS_REST_URL"):
+            mesclado["UPSTASH_REDIS_REST_URL"] = painel.get("UPSTASH_REDIS_REST_URL",
+                                                            "http://srh:80")
+        if not mesclado.get("UPSTASH_REDIS_REST_TOKEN"):
+            mesclado["UPSTASH_REDIS_REST_TOKEN"] = painel.get("UPSTASH_REDIS_REST_TOKEN",
+                                                              mesclado.get("SRH_TOKEN", ""))
+        diff = diff_env(painel, mesclado)
+        if not mesclado:
+            abortar(op, alteradas, "env-sync", "nada_a_sincronizar")
+        print(json.dumps({"preview": True, "total": len(diff),
+                          "env": [{"key": k, "value": mask(v)} for k, v in diff.items()]}))
+        data = [{"key": k, "value": v} for k, v in diff.items()]
+        if not data:
+            marcar_etapa(op, "env-sync", True, "sem_mudancas")
+            return
+        s, b = api_req(a.base_url, a.token_file, "PATCH",
+                       "/services/" + a.service_uuid + "/envs/bulk", {"data": data})
+        if s not in (200, 201):
+            abortar(op, alteradas, "env-sync", "env_sync_falhou", "status=%d" % s)
+        alteradas.append("env-sync")
+        marcar_etapa(op, "env-sync", True, "total=%d" % len(data))
+
+    def passo_restart(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_restart(a)
+        sys.stdout.write(buf.getvalue())
+        try:
+            st_restart = json.loads(buf.getvalue().strip().split("\n")[-1]).get("status", 0)
+        except Exception:
+            st_restart = 0
+        if st_restart not in (200, 201, 202):
+            abortar(op, alteradas, "restart", "restart_falhou", "status=%s" % st_restart)
+        alteradas.append("restart")
+        marcar_etapa(op, "restart", True, "status=%d" % st_restart)
+
+    def passo_aguardar_deploy(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        ref = ctx["ref"]
+        for _ in range(60):
+            r = run_lines(a.ssh, "docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}'")
+            if r["ok"] and containers_novos_ok(r["stdout"] or "", ref):
+                marcar_etapa(op, "aguardar-deploy", True, "tag=" + ref)
+                return
+            time.sleep(10)
+        abortar(op, alteradas, "aguardar-deploy", "deploy_nao_estabilizou", "tag=" + ref)
+
+    def passo_poll_tls(ctx):
+        op = ctx["op"]
+        alteradas = ctx["alteradas"]
+        a = ctx["a"]
+        if not (a.app_fqdn or ""):
+            abortar(op, alteradas, "poll-tls", "poll_tls_sem_fqdn")
+        ns_tls = SimpleNamespace(url="https://" + a.app_fqdn, attempts=18)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cmd_poll_tls(ns_tls)
+        sys.stdout.write(buf.getvalue())
+        try:
+            saida_tls = json.loads(buf.getvalue().strip().split("\n")[-1])
+        except Exception:
+            saida_tls = {}
+        if not saida_tls.get("ok"):
+            abortar(op, alteradas, "poll-tls", "poll_tls_falhou", str(saida_tls.get("reason", ""))[:200])
+        marcar_etapa(op, "poll-tls", True, "https://" + a.app_fqdn)
+
+    def executar_de(ctx, inicio):
+        passos = {"snapshot": passo_snapshot, "sync-compose": passo_sync_compose,
+                   "db-apply": passo_db_apply, "env-sync": passo_env_sync,
+                   "restart": passo_restart, "aguardar-deploy": passo_aguardar_deploy,
+                   "poll-tls": passo_poll_tls}
+        for etapa in ORDEM_ETAPAS_UPDATE[ORDEM_ETAPAS_UPDATE.index(inicio):]:
+            passos[etapa](ctx)
+
+    def finalizar(ctx):
+        print(json.dumps({"ok": True, "anterior": ctx["instalada"], "nova": ctx["ref"],
+                          "backup": ctx["backup"], "snapshot": ctx["snap_path"],
+                          "sql": "aplicado" if ctx["sql_aplicado"] else "pulado",
+                          "motivo_sql": ctx["motivo_sql"], "registro": ctx["op_dir"]}))
+
+    if a.resume:
+        try:
+            with open(a.op, "r", encoding="utf-8") as f:
+                op = json.load(f)
+        except Exception:
+            op = None
+        if not isinstance(op, dict) or not isinstance(op.get("etapas"), list):
+            print(json.dumps({"ok": False, "reason": "op_invalida"}))
+            sys.exit(1)
+        try:
+            ref = validar_ref(op.get("ref"))
+            if validar_ref(a.ref) != ref:
+                raise ValueError("op_invalida")
+        except ValueError:
+            print(json.dumps({"ok": False, "reason": "op_invalida"}))
+            sys.exit(1)
+        if a.dry_run:
+            print(json.dumps({"dry_run": True, "ref": ref,
+                              "etapas": ["pre-voo", "snapshot", "sync-compose",
+                                         "db-apply" if not a.skip_sql else "db-apply(pulado)",
+                                         "env-sync(preview)", "restart", "poll-tls"],
+                              "skip_sql": bool(a.skip_sql)}))
+            return
+        proxima = proxima_etapa(op)
+        if proxima == "concluido":
+            print(json.dumps({"ok": True, "acao": "retomada_concluida"}))
+            return
+        if not (a.app_fqdn or ""):
+            print(json.dumps({"ok": False, "reason": "app_fqdn_ausente"}))
+            sys.exit(1)
+        try:
+            with open(a.compose_file, "r", encoding="utf-8") as f:
+                template = f.read()
+        except OSError:
+            print(json.dumps({"ok": False, "reason": "compose_nao_lido"}))
+            sys.exit(1)
+        try:
+            env_base = resolver_env_base(a)
+        except OSError:
+            print(json.dumps({"ok": False, "reason": "env_arquivo_nao_lido"}))
+            sys.exit(1)
+        except ValueError as e:
+            print(json.dumps({"ok": False, "reason": "env_painel_nao_lido",
+                              "detalhe": str(e)[:200]}))
+            sys.exit(1)
+        op_dir = op.get("dir_saida") or tempfile.mkdtemp(prefix="deskcomm-update-")
+        try:
+            os.makedirs(op_dir, exist_ok=True)
+        except OSError:
+            print(json.dumps({"ok": False, "reason": "op_invalida"}))
+            sys.exit(1)
+        if (a.backup or ""):
+            val = run_lines(a.ssh, "test -s " + shlex.quote(BACKUP_DIR + "/" + a.backup))
+            if not val.get("ok"):
+                print(json.dumps({"ok": False, "reason": "backup_nao_validado"}))
+                sys.exit(1)
+            backup_nome = a.backup
+        else:
+            backup_nome = "nao_informado"
+        feitas = {e["etapa"] for e in op.get("etapas", []) if e.get("ok")}
+        alteradas = [e["etapa"] for e in op.get("etapas", [])
+                     if e.get("ok") and e["etapa"] in ("sync-compose", "db-apply",
+                                                      "env-sync", "restart")]
+        s, b = api_req(a.base_url, a.token_file, "GET", "/services/" + a.service_uuid)
+        if s != 200:
+            if "sync-compose" in feitas:
+                divergente("sync-compose")
+            abortar(op, alteradas, proxima, "service_nao_lido", "status=%d" % s)
+        try:
+            payload = json.loads(b)
+        except Exception:
+            payload = {}
+        tags_painel = extrair_tags_imagens(texto_imagens_painel(payload))
+        painel_compose = texto_imagens_painel(payload)
+        if "sync-compose" in feitas:
+            if len(tags_painel) != len(IMAGENS_DESKCOMM) or set(tags_painel.values()) != {ref}:
+                divergente("sync-compose")
+        if "db-apply" in feitas:
+            if not (a.ssh or ""):
+                divergente("db-apply")
+            env = env_base
+            db_url = env.get("SUPABASE_DB_URL", "")
+            if not db_url or "'" in db_url:
+                divergente("db-apply")
+            img = "docker run --rm postgres:16-alpine psql " + shlex.quote(db_url)
+            v = run_lines(a.ssh, img + " -tAc \"select count(*) from information_schema.tables "
+                          "where table_schema='public'\"")
+            try:
+                n_tabelas = int((v["stdout"] or "").strip().split("\n")[-1].strip())
+            except (ValueError, IndexError):
+                n_tabelas = 0
+            m = run_lines(a.ssh, img + " -tAc \"select coalesce(string_agg(t, ','), '') from "
+                          "(values ('job_queue'),('lead_checkpoints'),('agent_inbox_items'),"
+                          "('send_ledger')) as x(t) where to_regclass('public.'||t) is null\"")
+            ausentes = (m["stdout"] or "").strip().split("\n")[-1].strip() if m["ok"] else "?"
+            if n_tabelas < 30 or ausentes != "":
+                divergente("db-apply")
+        instalada = ""
+        for e in op.get("etapas", []):
+            if e.get("etapa") == "pre-voo" and e.get("ok"):
+                instalada = (e.get("detalhe") or "").split("->")[0].strip()
+                break
+        if "sync-compose" not in feitas:
+            if not instalada:
+                vals = sorted({t for t in tags_painel.values() if re.fullmatch(r"\d+\.\d+\.\d+", t)},
+                              key=lambda v: tuple(int(x) for x in v.split(".")))
+                instalada = vals[-1] if vals else ""
+                if not instalada:
+                    abortar(op, alteradas, proxima, "tag_instalada_nao_identificada")
+                if len(set(tags_painel.values())) > 1:
+                    abortar(op, alteradas, proxima, "tags_divergentes",
+                            ",".join(sorted(set(tags_painel.values()))))
+        elif not instalada:
+            instalada = ref
+        if (a.sql or ""):
+            sql_path = a.sql
+        elif a.skip_sql or "db-apply" in feitas:
+            sql_path = ""
+        else:
+            try:
+                sql_path = baixar_baseline_release(ref, op_dir)
+            except Exception as e:
+                print(json.dumps({"ok": False, "reason": "sql_download_falhou",
+                                  "detalhe": str(e)[:200]}))
+                sys.exit(1)
+        ctx = {"a": a, "op": op, "op_dir": op_dir, "alteradas": alteradas,
+               "template": template, "ref": ref, "instalada": instalada,
+               "painel_compose": painel_compose, "motivo_sql": "", "sql_aplicado": False,
+               "snap_path": "", "sql_path": sql_path, "backup": backup_nome,
+               "env_base": env_base}
+        for e in op.get("etapas", []):
+            if e.get("etapa") == "snapshot" and e.get("ok") and e.get("detalhe"):
+                ctx["snap_path"] = os.path.join(op_dir, e["detalhe"])
+            if e.get("etapa") == "db-apply" and e.get("ok"):
+                det = e.get("detalhe") or ""
+                if det.startswith("tables="):
+                    ctx["sql_aplicado"] = True
+                    ctx["motivo_sql"] = "baseline_mudou"
+                elif det:
+                    ctx["motivo_sql"] = det
+        executar_de(ctx, proxima)
+        finalizar(ctx)
+        return
+    try:
+        ref = validar_ref(a.ref)
+    except ValueError:
+        print(json.dumps({"ok": False, "reason": "ref_invalida"}))
+        sys.exit(1)
+    try:
+        with open(a.compose_file, "r", encoding="utf-8") as f:
+            template = f.read()
+    except OSError:
+        print(json.dumps({"ok": False, "reason": "compose_nao_lido"}))
+        sys.exit(1)
+    if a.dry_run:
+        print(json.dumps({"dry_run": True, "ref": ref,
+                          "etapas": ["pre-voo", "snapshot", "sync-compose",
+                                     "db-apply" if not a.skip_sql else "db-apply(pulado)",
+                                     "env-sync(preview)", "restart", "aguardar-deploy", "poll-tls"],
+                          "skip_sql": bool(a.skip_sql)}))
+        return
+    if not (a.app_fqdn or ""):
+        print(json.dumps({"ok": False, "reason": "app_fqdn_ausente"}))
+        sys.exit(1)
+    if not (a.ssh or ""):
+        print(json.dumps({"ok": False, "reason": "ssh_ausente"}))
+        sys.exit(1)
+    if (a.backup or ""):
+        val = run_lines(a.ssh, "test -s " + shlex.quote(BACKUP_DIR + "/" + a.backup))
+        if not val.get("ok"):
+            print(json.dumps({"ok": False, "reason": "backup_nao_validado"}))
+            sys.exit(1)
+        backup_nome = a.backup
+    else:
+        backup_nome = "nao_informado"
+    try:
+        env_base = resolver_env_base(a)
+    except OSError:
+        print(json.dumps({"ok": False, "reason": "env_arquivo_nao_lido"}))
+        sys.exit(1)
+    except ValueError as e:
+        print(json.dumps({"ok": False, "reason": "env_painel_nao_lido",
+                          "detalhe": str(e)[:200]}))
+        sys.exit(1)
+    op_dir = tempfile.mkdtemp(prefix="deskcomm-update-")
+    op = novo_registro_operacao(ref, op_dir)
+    alteradas = []
+    if (a.sql or ""):
+        sql_path = a.sql
+    elif a.skip_sql:
+        sql_path = ""
+    else:
+        try:
+            sql_path = baixar_baseline_release(ref, op_dir)
+        except Exception as e:
+            print(json.dumps({"ok": False, "reason": "sql_download_falhou",
+                              "detalhe": str(e)[:200]}))
+            sys.exit(1)
+    s, b = api_req(a.base_url, a.token_file, "GET", "/services/" + a.service_uuid)
+    if s != 200:
+        abortar(op, alteradas, "pre-voo", "service_nao_lido", "status=%d" % s)
+    try:
+        payload = json.loads(b)
+    except Exception:
+        payload = {}
+    tags = extrair_tags_imagens(texto_imagens_painel(payload))
+    painel_compose = texto_imagens_painel(payload)
+    vals = sorted({t for t in tags.values() if re.fullmatch(r"\d+\.\d+\.\d+", t)},
+                  key=lambda v: tuple(int(x) for x in v.split(".")))
+    instalada = vals[-1] if vals else ""
+    if not instalada:
+        abortar(op, alteradas, "pre-voo", "tag_instalada_nao_identificada")
+    if len(set(tags.values())) > 1:
+        abortar(op, alteradas, "pre-voo", "tags_divergentes", ",".join(sorted(set(tags.values()))))
+    try:
+        acao = comparar_versoes(instalada, ref)
+    except ValueError:
+        abortar(op, alteradas, "pre-voo", "alvo_anterior_a_instalada", instalada + "->" + ref)
+    if acao == "nada_a_fazer":
+        marcar_etapa(op, "pre-voo", True, instalada)
+        print(json.dumps({"ok": True, "acao": "nada_a_fazer", "instalada": instalada}))
+        return
+    marcar_etapa(op, "pre-voo", True, instalada + "->" + ref)
+    ctx = {"a": a, "op": op, "op_dir": op_dir, "alteradas": alteradas,
+           "template": template, "ref": ref, "instalada": instalada,
+           "painel_compose": painel_compose, "motivo_sql": "", "sql_aplicado": False,
+           "snap_path": "", "sql_path": sql_path, "backup": backup_nome,
+           "env_base": env_base}
+    executar_de(ctx, "snapshot")
+    finalizar(ctx)
 
 
 def cmd_set_fqdn(a):
@@ -544,7 +1218,7 @@ def main():
     g.add_argument("--token-file", required=True); g.add_argument("--path", required=True)
     es = sub.add_parser("env-sync"); es.add_argument("--base-url", required=True)
     es.add_argument("--token-file", required=True); es.add_argument("--service-uuid", required=True)
-    es.add_argument("--file", required=True); es.add_argument("--app-fqdn", default="")
+    es.add_argument("--file", default=""); es.add_argument("--app-fqdn", default="")
     es.add_argument("--preview", action="store_true")
     en = sub.add_parser("env-set"); en.add_argument("--base-url", required=True)
     en.add_argument("--token-file", required=True); en.add_argument("--service-uuid", required=True)
@@ -561,6 +1235,18 @@ def main():
     rs.add_argument("--token-file", required=True); rs.add_argument("--service-uuid", required=True)
     pt = sub.add_parser("poll-tls"); pt.add_argument("--url", required=True)
     pt.add_argument("--attempts", type=int, default=18)
+    vs = sub.add_parser("version-status"); vs.add_argument("--base-url", required=True)
+    vs.add_argument("--token-file", required=True); vs.add_argument("--service-uuid", required=True)
+    up = sub.add_parser("update"); up.add_argument("--base-url", required=True)
+    up.add_argument("--token-file", required=True); up.add_argument("--service-uuid", required=True)
+    up.add_argument("--ref", required=True); up.add_argument("--compose-file", required=True)
+    up.add_argument("--file", default=""); up.add_argument("--sql", default="")
+    up.add_argument("--backup", default="")
+    up.add_argument("--app-fqdn", default=""); up.add_argument("--dry-run", action="store_true")
+    up.add_argument("--skip-sql", action="store_true")
+    up.add_argument("--op", default="")
+    up.add_argument("--resume", action="store_true")
+    up.add_argument("--ssh", default="")
     a = p.parse_args()
     if a.cmd == "heal-localhost":
         cmd_heal_localhost(a)
@@ -599,6 +1285,10 @@ def main():
         cmd_restart(a)
     elif a.cmd == "poll-tls":
         cmd_poll_tls(a)
+    elif a.cmd == "version-status":
+        cmd_version_status(a)
+    elif a.cmd == "update":
+        cmd_update(a)
 
 
 if __name__ == "__main__":
